@@ -34,7 +34,6 @@ ENV/
 ##################################
 local_settings.py
 settings_local.py
-settings.py
 
 ##################################
 # NODE / NEXT.JS
