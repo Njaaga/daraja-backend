@@ -64,16 +64,18 @@ class SetPasswordSerializer(serializers.Serializer):
 # API DATA SOURCE SERIALIZER
 # ----------------------------------------------------
 class ApiDataSourceSerializer(serializers.ModelSerializer):
-    # write-only API key
+    # 🔒 write-only secrets
     api_key = serializers.CharField(write_only=True, required=False, allow_blank=True)
+    bearer_token = serializers.CharField(write_only=True, required=False, allow_blank=True)
+    jwt_secret = serializers.CharField(write_only=True, required=False, allow_blank=True)
 
-    # Show tenant info in responses
+    # Tenant info (read-only)
     tenant_id = serializers.PrimaryKeyRelatedField(
-        source='tenant',  # links to tenant FK
+        source="tenant",
         read_only=True
     )
     tenant_name = serializers.CharField(
-        source='tenant.name',  # human-readable name
+        source="tenant.name",
         read_only=True
     )
 
@@ -84,14 +86,67 @@ class ApiDataSourceSerializer(serializers.ModelSerializer):
             "name",
             "base_url",
             "auth_type",
+
+            # API key
             "api_key",
-            "api_key_header",
+            "api_key_name",
+
+            # Bearer
+            "bearer_token",
+
+            # JWT
+            "jwt_secret",
+            "jwt_subject",
+            "jwt_audience",
+            "jwt_issuer",
+            "jwt_ttl_seconds",
+
+            # Meta
             "created_by",
             "created_at",
             "tenant_id",
             "tenant_name",
         ]
-        read_only_fields = ["created_by", "created_at", "tenant_id", "tenant_name"]
+        read_only_fields = [
+            "created_by",
+            "created_at",
+            "tenant_id",
+            "tenant_name",
+        ]
+
+    def validate(self, attrs):
+        auth_type = attrs.get(
+            "auth_type",
+            self.instance.auth_type if self.instance else None
+        )
+
+        def existing(field):
+            return getattr(self.instance, field, None) if self.instance else None
+
+        if auth_type == "API_KEY_HEADER" or auth_type == "API_KEY_QUERY":
+            if not (attrs.get("api_key") or existing("api_key")):
+                raise serializers.ValidationError(
+                    "API key auth requires api_key"
+                )
+
+        if auth_type == "BEARER":
+            if not (attrs.get("bearer_token") or existing("bearer_token")):
+                raise serializers.ValidationError(
+                    "Bearer auth requires bearer_token"
+                )
+
+        if auth_type == "JWT_HS256":
+            secret = attrs.get("jwt_secret") or existing("jwt_secret")
+            subject = attrs.get("jwt_subject") or existing("jwt_subject")
+            audience = attrs.get("jwt_audience") or existing("jwt_audience")
+
+            if not all([secret, subject, audience]):
+                raise serializers.ValidationError(
+                    "JWT auth requires secret, subject, and audience"
+                )
+
+        return attrs
+
 
 
 # ----------------------------------------------------

@@ -26,7 +26,11 @@ SECRET_KEY = 'django-insecure-bb+_jj6ucgmoye&9q+e#!h1142nyn%y^pdichrgw9i(y@p17jg
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = []
+ALLOWED_HOSTS = [
+    "localhost",
+    "127.0.0.1",
+    "stepless-dozy-lakeisha.ngrok-free.dev",  # <- add your ngrok URL here
+]
 
 
 # Application definition
@@ -74,11 +78,12 @@ CORS_ALLOWED_ORIGINS = [
 CORS_ALLOW_HEADERS = [
     "authorization",
     "content-type",
-    "x-tenant-subdomain",
+    "x-tenant-slug",
     "accept",
     "origin",
 ]
 
+CORS_ALLOW_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
 
 FRONTEND_URL = "http://localhost:3000"
 
@@ -112,14 +117,12 @@ WSGI_APPLICATION = 'dashboard_app.wsgi.application'
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.postgresql',
-        'NAME': 'darajadb',
-        'USER': 'darajauser',
-        'PASSWORD': '5mceqL3jEUzg6Xq',
-        'HOST': 'darajadb.c746kqoy2uqe.us-east-2.rds.amazonaws.com',
-        'PORT': '5432',
-        "OPTIONS": {
-            "sslmode": "require",
-        },
+        'NAME': 'login_functionality_db',
+        'USER': 'login_functionality_user',
+        'PASSWORD': 'icyC@ed10',
+        'HOST': 'localhost',
+        'PORT': '5432',  
+        'CONN_MAX_AGE': 60,
     }
 }
 
@@ -171,6 +174,7 @@ REST_FRAMEWORK = {
     ),
     'DEFAULT_PERMISSION_CLASSES': (
         'rest_framework.permissions.IsAuthenticated',
+        'subscriptions.permissions.IsTenantSubscribed',
     ),
 }
 
@@ -178,8 +182,8 @@ REST_FRAMEWORK = {
 
 EMAIL_BACKEND = "django.core.mail.backends.smtp.EmailBackend"
 EMAIL_HOST = "smtp.mailtrap.io"
-EMAIL_HOST_USER = "e1d25560bf2cc3"
-EMAIL_HOST_PASSWORD = "04bafb3401d8bd"
+EMAIL_HOST_USER = "811ff587441671"
+EMAIL_HOST_PASSWORD = "4ea6d96c3a54cc"
 EMAIL_PORT = 587
 EMAIL_USE_TLS = True
 DEFAULT_FROM_EMAIL = "no-reply@example.com"
@@ -195,8 +199,6 @@ AUTHENTICATION_BACKENDS = [
 
 
 
-STRIPE_SECRET_KEY = os.environ.get("STRIPE_SECRET_KEY")
-STRIPE_PUBLISHABLE_KEY = os.environ.get("STRIPE_PUBLISHABLE_KEY")
-
-
-
+STRIPE_SECRET_KEY = "sk_test_51ScWR0RmVC1QU5lPZUt0aPkWsRf1JmelEUZVAQMkBoaiEXJ8qM0L67OHCs5vSdCNC0QJ87wCcMwgOet8nljkyejA00gBLav9IJ"
+STRIPE_PUBLISHABLE_KEY = "pk_test_51ScWR0RmVC1QU5lP25HlClhQeBrsGTdakbyxp39Jl0FIThrlsIz6LPAoy5BOFUZctIdSC5OQFu0mY9O4G9MLT4H400lzx7zxmK"
+STRIPE_WEBHOOK_SECRET = "whsec_3TrmAjNN5tdAtqvux04Yp7M9zsxZtJoo"

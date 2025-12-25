@@ -1,5 +1,8 @@
 # subscriptions/views.py
+from django.shortcuts import get_object_or_404
+import logging
 import stripe
+from django.db import transaction
 from django.conf import settings
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.views import APIView
@@ -13,9 +16,15 @@ from django.http import HttpResponse
 from django.utils.decorators import method_decorator
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
+from datetime import datetime, timedelta, timezone as dt_timezone
+from django.db import transaction
+from django.utils.timezone import localtime
+
+logger = logging.getLogger(__name__)
+
 
 stripe.api_key = settings.STRIPE_SECRET_KEY
-FRONTEND_URL = getattr(settings, 'FRONTEND_URL', 'http://localhost:3000')
+FRONTEND_URL = settings.FRONTEND_URL
 
 
 class ListPlansView(APIView):
@@ -25,66 +34,80 @@ class ListPlansView(APIView):
         plans = SubscriptionPlan.objects.all().values("id", "name", "price")
         return Response(plans)
 
-
 class CreateStripeCheckoutSession(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
-        # Get tenant without passing request
-        tenant = get_current_tenant()
-        if not tenant:
-            return Response({"error": "Tenant not found"}, status=400)
+        print("=== Incoming Request ===")
+        print("Headers:", request.headers)
+        print("Body:", request.data)
 
+        # Get tenant from header
+        tenant_slug = request.META.get("HTTP_X_TENANT_SLUG")
+        if not tenant_slug:
+            print("❌ Tenant header missing")
+            return Response({"error": "Tenant header missing"}, status=400)
+        print(f"✅ Tenant header found: {tenant_slug}")
+
+        tenant = get_object_or_404(Tenant, subdomain=tenant_slug)
+        print(f"✅ Tenant detected: {tenant}")
+
+        # Get plan
         plan_id = request.data.get("plan_id")
         if not plan_id:
-            return Response({"error": "Missing plan_id"}, status=400)
+            print("❌ Plan ID missing")
+            return Response({"error": "Plan ID missing"}, status=400)
+        plan = get_object_or_404(SubscriptionPlan, id=plan_id)
+        print(f"✅ Plan found: {plan.name} (${plan.price})")
 
-        try:
-            plan = SubscriptionPlan.objects.get(id=plan_id)
-        except SubscriptionPlan.DoesNotExist:
-            return Response({"error": "Plan not found"}, status=404)
+        # Get superadmin user
+        tenant_user = TenantUser.objects.filter(tenant=tenant, is_superadmin=True).first()
+        if not tenant_user:
+            print(f"❌ No superadmin user found for tenant {tenant_slug}")
+            return Response({"error": "No superadmin user found for tenant"}, status=400)
+        customer_email = tenant_user.user.email
+        print(f"✅ Superadmin email: {customer_email}")
 
-        if not plan.stripe_price_id:
-            return Response({"error": "Plan missing Stripe price ID"}, status=400)
-
-        # Create Stripe customer if not exists
-        if not tenant.stripe_customer_id:
-            admin = User.objects.filter(
-                tenantuser__tenant=tenant,
-                is_superuser=True
-            ).first()
-            if not admin:
-                return Response({"error": "Tenant admin missing"}, status=400)
-
-            customer = stripe.Customer.create(
-                email=admin.email,
-                metadata={"tenant": tenant.subdomain},
-            )
+        # Create or retrieve Stripe customer
+        if tenant.stripe_customer_id:
+            try:
+                customer = stripe.Customer.retrieve(tenant.stripe_customer_id)
+                print(f"✅ Using existing Stripe customer: {customer.id}")
+            except Exception:
+                customer = stripe.Customer.create(email=customer_email, metadata={"tenant_slug": tenant_slug})
+                tenant.stripe_customer_id = customer.id
+                tenant.save()
+                print(f"✅ Created new Stripe customer: {customer.id}")
+        else:
+            customer = stripe.Customer.create(email=customer_email, metadata={"tenant_slug": tenant_slug})
             tenant.stripe_customer_id = customer.id
             tenant.save()
+            print(f"✅ Created Stripe customer: {customer.id}")
 
-        # Build frontend URLs with tenant subdomain (local dev)
-        if settings.DEBUG:
-            frontend_host = f"{tenant.subdomain}.localhost:3000"
-            success_url = f"http://{frontend_host}/billing?success=1&tenant={tenant.subdomain}"
-            cancel_url = f"http://{frontend_host}/billing?canceled=1&tenant={tenant.subdomain}"
-        else:
-            # Production
-            success_url = f"{settings.FRONTEND_URL}/billing?success=1&tenant={tenant.subdomain}"
-            cancel_url = f"{settings.FRONTEND_URL}/billing?canceled=1&tenant={tenant.subdomain}"
-
-        # Create Stripe checkout session
-        session = stripe.checkout.Session.create(
-            customer=tenant.stripe_customer_id,
-            mode="subscription",
-            line_items=[{"price": plan.stripe_price_id, "quantity": 1}],
-            metadata={"tenant_subdomain": tenant.subdomain, "plan_id": str(plan.id)},
-            subscription_data={"metadata": {"tenant_subdomain": tenant.subdomain, "plan_id": str(plan.id)}},
-            success_url=success_url,
-            cancel_url=cancel_url,
-        )
-
-        return Response({"url": session.url})
+        # Create checkout session
+        try:
+            session = stripe.checkout.Session.create(
+                customer=customer.id,
+                mode="subscription",
+                payment_method_types=["card"],
+                line_items=[{
+                    "price": plan.stripe_price_id,
+                    "quantity": 1,
+                }],
+                subscription_data={
+                    "metadata": {
+                        "tenant_slug": tenant_slug,
+                        "plan_id": str(plan.id),
+                    }
+                },
+                success_url=f"{settings.FRONTEND_URL}/billing?success=1",
+                cancel_url=f"{settings.FRONTEND_URL}/billing?canceled=1",
+            )
+            print(f"✅ Checkout session created: {session.id}")
+            return Response({"url": session.url})
+        except Exception as e:
+            print(f"❌ Stripe error creating session: {e}")
+            return Response({"error": str(e)}, status=400)
 
 
 
@@ -95,77 +118,89 @@ def stripe_webhook(request):
     sig_header = request.META.get("HTTP_STRIPE_SIGNATURE")
     endpoint_secret = settings.STRIPE_WEBHOOK_SECRET
 
-    print("🔥 Stripe webhook received")
-
-    # Verify Stripe signature
     try:
-        event = stripe.Webhook.construct_event(payload, sig_header, endpoint_secret)
-        print("✅ Event verified:", event["type"])
-    except Exception as e:
-        print("❌ Webhook signature error:", e)
+        event = stripe.Webhook.construct_event(
+            payload=payload, sig_header=sig_header, secret=endpoint_secret
+        )
+    except ValueError:
+        logger.error("Invalid payload")
+        return HttpResponse(status=400)
+    except stripe.error.SignatureVerificationError:
+        logger.error("Invalid signature")
         return HttpResponse(status=400)
 
-    # Handle checkout.session.completed
-    if event["type"] == "checkout.session.completed":
-        session = event["data"]["object"]
-        print("Session object:", session)
+    try:
+        event_type = event["type"]
+        data_object = event["data"]["object"]
 
-        subscription_id = session.get("subscription")
-        metadata = session.get("metadata", {})
-        tenant_subdomain = metadata.get("tenant_subdomain")
-        plan_id = metadata.get("plan_id")
+        # Handle creation and updates
+        if event_type in ["customer.subscription.created", "customer.subscription.updated"]:
+            items = data_object.get("items", {}).get("data", [])
+            if not items:
+                logger.warning("No subscription items found.")
+                return HttpResponse(status=200)
 
-        # Debug missing metadata
-        if not all([subscription_id, tenant_subdomain, plan_id]):
-            print(f"❌ Missing info in webhook: subscription_id={subscription_id}, tenant_subdomain={tenant_subdomain}, plan_id={plan_id}")
-            return HttpResponse(status=400)
+            subscription_item = items[0]
+            start_ts = subscription_item.get("current_period_start")
+            end_ts = subscription_item.get("current_period_end")
 
-        try:
-            # Get tenant and plan
-            tenant = Tenant.objects.get(subdomain=tenant_subdomain)
-            plan = SubscriptionPlan.objects.get(id=plan_id)
+            start_date = datetime.fromtimestamp(start_ts, tz=dt_timezone.utc) if start_ts else None
+            end_date = datetime.fromtimestamp(end_ts, tz=dt_timezone.utc) if end_ts else None
 
-            # Retrieve full Stripe subscription to get period_end
-            stripe_sub = stripe.Subscription.retrieve(subscription_id)
-            current_period_end = timezone.datetime.fromtimestamp(
-                stripe_sub["current_period_end"], tz=timezone.utc
-            )
+            # Resolve tenant and plan from metadata
+            tenant_slug = data_object.get("metadata", {}).get("tenant_slug")
+            plan_id = data_object.get("metadata", {}).get("plan_id")
+            if not tenant_slug:
+                logger.error("Tenant slug missing in subscription metadata")
+                return HttpResponse(status=400)
 
-            # Save or update subscription in DB
+            tenant = Tenant.objects.filter(subdomain__iexact=tenant_slug).first()
+            if not tenant:
+                logger.error(f"Tenant '{tenant_slug}' not found")
+                return HttpResponse(status=400)
+
+            plan = SubscriptionPlan.objects.filter(id=plan_id).first() if plan_id else None
+
+            # Update or create subscription in DB
             sub, created = TenantSubscription.objects.update_or_create(
                 tenant=tenant,
                 defaults={
                     "plan": plan,
-                    "active": True,
-                    "start_date": timezone.now(),
-                    "end_date": current_period_end.date(),
-                    "stripe_subscription_id": subscription_id,
-                    "max_users": plan.max_users,
+                    "stripe_subscription_id": data_object["id"],
+                    "start_date": start_date,
+                    "end_date": end_date,
+                    # Only active if Stripe status is 'active' and not set to cancel at period end
+                    "active": data_object['status'] == 'active' and not data_object.get("cancel_at_period_end", False),
+                    "auto_renew": not data_object.get("cancel_at_period_end", False),
+                    "max_api_rows": plan.max_api_rows,
                     "max_dashboards": plan.max_dashboards,
                     "max_datasets": plan.max_datasets,
-                    "max_api_rows": plan.max_api_rows,
-                    "auto_renew": True,
-                },
+                    "max_users": plan.max_users,
+                    "max_groups": plan.max_groups,
+                }
             )
 
-            print(f"✅ Subscription {'created' if created else 'updated'} in DB: {sub.id} for tenant {tenant.subdomain}")
+            logger.info(
+                f"Subscription {'created' if created else 'updated'} for tenant {tenant_slug}, "
+                f"active={sub.active}, auto_renew={sub.auto_renew}, period: {start_date} - {end_date}"
+            )
 
-        except Tenant.DoesNotExist:
-            print(f"❌ Tenant not found: {tenant_subdomain}")
-            return HttpResponse(status=400)
-        except SubscriptionPlan.DoesNotExist:
-            print(f"❌ Plan not found: {plan_id}")
-            return HttpResponse(status=400)
-        except Exception as e:
-            print("❌ DB error:", e)
-            return HttpResponse(status=500)
+        elif event_type == "invoice.paid":
+            subscription_id = data_object.get("subscription")
+            if subscription_id:
+                sub = TenantSubscription.objects.filter(stripe_subscription_id=subscription_id).first()
+                if sub:
+                    sub.active = True
+                    sub.save()
+                    logger.info(f"Invoice paid, subscription {subscription_id} marked active")
+            else:
+                logger.warning("Invoice does not have a subscription ID.")
 
-    # Handle other events here if needed
-    else:
-        print(f"ℹ️ Unhandled event type: {event['type']}")
+    except Exception as e:
+        logger.error(f"Webhook processing error: {e}", exc_info=True)
+        return HttpResponse(status=200)
 
     return HttpResponse(status=200)
-
 
 
 
@@ -216,82 +251,94 @@ class SubscriptionStatusView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        tenant = get_current_tenant()
+        try:
+            tenant_user = TenantUser.objects.select_related("tenant").get(user=request.user)
+            tenant = tenant_user.tenant
+        except TenantUser.DoesNotExist:
+            return Response({"active": False})
 
-        # Always return 200
-        if not tenant:
-            return Response({
-                "active": False,
-                "current_plan": None,
-                "available_plans": []
-            })
+        sub = TenantSubscription.objects.select_related("plan").filter(tenant=tenant).first()
+        if not sub:
+            return Response({"active": False})
 
-        sub = (
-            TenantSubscription.objects
-            .select_related("plan")
-            .filter(tenant=tenant, active=True)
-            .first()
-        )
-
-        is_active = (
-            sub
-            and (not sub.end_date or sub.end_date >= timezone.now().date())
-        )
-
-        current_plan = None
-        if is_active:
-            current_plan = {
-                "id": sub.plan.id,
-                "name": sub.plan.name,
-                "price": sub.plan.price,
-                "start_date": sub.start_date,
-                "end_date": sub.end_date,
-                "auto_renew": sub.auto_renew,
-                "limits": {
-                    "users": sub.max_users,
-                    "dashboards": sub.max_dashboards,
-                    "datasets": sub.max_datasets,
-                    "api_rows": sub.max_api_rows,
-                },
-            }
-
-        plans_qs = SubscriptionPlan.objects.all()
-        if current_plan:
-            plans_qs = plans_qs.exclude(id=current_plan["id"])
-
-        available_plans = list(
-            plans_qs.values("id", "name", "price")
-        )
+        # Format dates
+        start_str = localtime(sub.start_date).strftime("%m/%d/%Y") if sub.start_date else None
+        end_str = sub.end_date.strftime("%m/%d/%Y") if sub.end_date else None
 
         return Response({
-            "active": bool(current_plan),
-            "current_plan": current_plan,
-            "available_plans": available_plans,
+            "current_plan": {
+                "id": sub.plan.id if sub.plan else None,
+                "name": sub.plan.name if sub.plan else None,
+                "price": sub.plan.price if sub.plan else None,
+                "start_date": start_str,
+                "end_date": end_str,
+                "auto_renew": sub.auto_renew,
+                "active": sub.active,
+            }
         })
 
 
 
+
 class CancelSubscriptionView(APIView):
-    permission_classes = [AllowAny]
+    permission_classes = [IsAuthenticated]
 
     def post(self, request):
         tenant = get_current_tenant()
         if not tenant:
             return Response({"error": "Tenant not found"}, status=404)
+
         try:
             sub = TenantSubscription.objects.get(tenant=tenant)
-            if sub.stripe_subscription_id:
-                try:
-                    stripe.Subscription.modify(sub.stripe_subscription_id, cancel_at_period_end=True)
-                except Exception:
-                    pass
-            sub.active = False
-            sub.end_date = timezone.now().date()
-            sub.save()
-            return Response({"status": "success", "message": "Subscription canceled."})
         except TenantSubscription.DoesNotExist:
             return Response({"error": "No subscription found to cancel."}, status=404)
 
+        if sub.stripe_subscription_id:
+            try:
+                # Retrieve current Stripe subscription
+                stripe_sub = stripe.Subscription.retrieve(sub.stripe_subscription_id)
+                status = stripe_sub.status
+
+                if status in ['active', 'trialing']:
+                    # Cancel at period end
+                    stripe.Subscription.modify(
+                        sub.stripe_subscription_id,
+                        cancel_at_period_end=True
+                    )
+                    sub.auto_renew = False
+                    sub.save()
+                    return Response({
+                        "status": "success",
+                        "message": "Subscription will be canceled at the end of the current period."
+                    })
+                else:
+                    # Subscription not active; mark inactive immediately
+                    sub.active = False
+                    sub.auto_renew = False
+                    sub.end_date = timezone.now()
+                    sub.save()
+                    return Response({
+                        "status": "success",
+                        "message": f"Subscription is {status}, canceled locally."
+                    })
+
+            except stripe.error.StripeError as e:
+                print("🔥 Stripe error:", e)
+                return Response({"error": f"Stripe error: {str(e)}"}, status=500)
+            except Exception as e:
+                print("🔥 Cancel subscription error:", e)
+                return Response({"error": str(e)}, status=500)
+        else:
+            # No Stripe subscription ID, cancel locally
+            sub.active = False
+            sub.auto_renew = False
+            sub.end_date = timezone.now()
+            sub.save()
+            return Response({
+                "status": "success",
+                "message": "Subscription canceled locally."
+            })
+        
 
 class ToggleAutoRenewView(APIView):
     permission_classes = [AllowAny]
@@ -310,57 +357,72 @@ class ToggleAutoRenewView(APIView):
 
 
 class ListInvoicesView(APIView):
-    permission_classes = [AllowAny]
+    permission_classes = [IsAuthenticated]
 
     def get(self, request):
         tenant = get_current_tenant()
         if not tenant:
             return Response({"error": "Tenant not found"}, status=404)
-        if not getattr(tenant, "stripe_customer_id", None):
-            return Response([], status=200)
+
+        stripe_customer_id = getattr(tenant, "stripe_customer_id", None)
+        if not stripe_customer_id:
+            return Response([], status=200)  # Safe empty list
+
         try:
-            invoices = stripe.Invoice.list(customer=tenant.stripe_customer_id, limit=50)
-            formatted = []
-            for inv in invoices.auto_paging_iter():
-                formatted.append({
+            invoices = stripe.Invoice.list(customer=stripe_customer_id, limit=50)
+            formatted = [
+                {
                     "id": inv.id,
                     "number": getattr(inv, "number", None),
                     "amount_due": inv.amount_due,
                     "status": inv.status,
-                    "pdf": inv.invoice_pdf if hasattr(inv, "invoice_pdf") else None,
+                    "pdf": getattr(inv, "invoice_pdf", None),
                     "created": inv.created,
-                })
+                }
+                for inv in invoices.auto_paging_iter()
+            ]
             return Response(formatted)
-        except Exception as e:
-            return Response({"error": str(e)}, status=400)
+        except stripe.error.StripeError as e:
+            # Log the error and return empty list
+            print(f"Stripe Invoice list error for tenant {tenant.id}: {str(e)}")
+            return Response([], status=200)
 
 
 class CreateSetupIntentView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
-        user = request.user
-        tenant_subdomain = request.headers.get("X-Tenant-Subdomain")
+        print(">>> ENTERED CreateSetupIntentView")
 
-        if not tenant_subdomain:
+        user = request.user
+        tenant_slug = request.headers.get("X-Tenant-Slug")
+
+        if not tenant_slug:
             return Response({"error": "Tenant header missing"}, status=400)
 
         tenant_user = TenantUser.objects.filter(
             user=user,
-            tenant__subdomain=tenant_subdomain
+            tenant__subdomain=tenant_slug
         ).first()
 
+        print("TENANT USER:", tenant_user)
+
         if not tenant_user:
-            return Response({"error": "User does not belong to this tenant"}, status=403)
+            return Response(
+                {"error": "User does not belong to this tenant"},
+                status=403
+            )
 
         try:
             if not tenant_user.stripe_customer_id:
                 customer = stripe.Customer.create(
                     email=user.email,
-                    metadata={"tenant": tenant_subdomain},
+                    metadata={"tenant": tenant_slug},
                 )
                 tenant_user.stripe_customer_id = customer.id
                 tenant_user.save()
+
+            print("Stripe customer ID:", tenant_user.stripe_customer_id)
 
             intent = stripe.SetupIntent.create(
                 customer=tenant_user.stripe_customer_id,
@@ -373,7 +435,14 @@ class CreateSetupIntentView(APIView):
             })
 
         except stripe.error.StripeError as e:
-            return Response({"error": str(e)}, status=400)
+            print("STRIPE ERROR:", e)
+            return Response(
+                {"error": e.user_message or str(e)},
+                status=400
+            )
+
+
+        
 
 
 
@@ -382,26 +451,43 @@ class ListPaymentMethods(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        user = request.user
         tenant = get_current_tenant()
         if not tenant:
-            return Response({"error": "Tenant not found"}, status=400)
-        tenant_user = TenantUser.objects.filter(user=user, tenant=tenant).first()
-        if not tenant_user or not tenant_user.stripe_customer_id:
-            return Response({"methods": []})
+            return Response({"error": "Tenant not found"}, status=404)
+
+        stripe_customer_id = getattr(tenant, "stripe_customer_id", None)
+        if not stripe_customer_id:
+            return Response([], status=200)  # Safe empty list
+
         try:
-            pms = stripe.PaymentMethod.list(customer=tenant_user.stripe_customer_id, type="card")
-            formatted = [{
-                "id": pm.id,
-                "brand": pm.card.brand,
-                "last4": pm.card.last4,
-                "exp_month": pm.card.exp_month,
-                "exp_year": pm.card.exp_year,
-                "is_default": pm.id == getattr(tenant_user, "default_payment_method_id", None),
-            } for pm in pms.data]
-            return Response({"methods": formatted})
-        except Exception as e:
-            return Response({"error": str(e)}, status=400)
+            # ✅ Get the Stripe customer to find default PM
+            customer = stripe.Customer.retrieve(stripe_customer_id)
+            default_pm_id = customer.invoice_settings.default_payment_method
+
+            # ✅ List all payment methods
+            payment_methods = stripe.PaymentMethod.list(
+                customer=stripe_customer_id,
+                type="card",
+            )
+
+            methods = [
+                {
+                    "id": pm.id,
+                    "brand": pm.card.brand,
+                    "last4": pm.card.last4,
+                    "exp_month": pm.card.exp_month,
+                    "exp_year": pm.card.exp_year,
+                    "is_default": pm.id == default_pm_id,  # 🔑 Boolean
+                }
+                for pm in payment_methods.data
+            ]
+
+            return Response(methods)
+
+        except stripe.error.StripeError as e:
+            print(f"Stripe PaymentMethod list error for tenant {tenant.id}: {str(e)}")
+            return Response([], status=200)
+
 
 
 class SetDefaultPaymentMethod(APIView):
@@ -410,23 +496,53 @@ class SetDefaultPaymentMethod(APIView):
     def post(self, request):
         user = request.user
         payment_method_id = request.data.get("payment_method_id")
+        tenant = get_current_tenant()
+
         if not payment_method_id:
             return Response({"error": "payment_method_id is required"}, status=400)
-        tenant = get_current_tenant()
-        if not tenant:
-            return Response({"error": "Tenant not found"}, status=400)
+
         tenant_user = TenantUser.objects.filter(user=user, tenant=tenant).first()
         if not tenant_user or not tenant_user.stripe_customer_id:
             return Response({"error": "Stripe customer not found"}, status=400)
+
+        customer_id = tenant_user.stripe_customer_id
+
         try:
-            stripe.Customer.modify(
-                tenant_user.stripe_customer_id, invoice_settings={"default_payment_method": payment_method_id}
+            # 🔑 Ensure PM is attached
+            stripe.PaymentMethod.attach(
+                payment_method_id,
+                customer=customer_id,
             )
+
+            # ✅ Set as default for invoices
+            stripe.Customer.modify(
+                customer_id,
+                invoice_settings={
+                    "default_payment_method": payment_method_id
+                }
+            )
+
+            # ✅ Optional: update active subscription
+            subscriptions = stripe.Subscription.list(
+                customer=customer_id,
+                status="active",
+                limit=1,
+            )
+
+            if subscriptions.data:
+                stripe.Subscription.modify(
+                    subscriptions.data[0].id,
+                    default_payment_method=payment_method_id,
+                )
+
             tenant_user.default_payment_method_id = payment_method_id
             tenant_user.save()
+
             return Response({"success": True})
-        except Exception as e:
+
+        except stripe.error.StripeError as e:
             return Response({"error": str(e)}, status=400)
+
 
 
 
@@ -438,44 +554,113 @@ class CreateSubscriptionWithSavedCardView(APIView):
         user = request.user
         plan_id = request.data.get("plan_id")
 
+        logger.info(f"Change plan request: tenant={tenant}, user={user}, plan_id={plan_id}")
+
         if not tenant or not plan_id:
             return Response({"error": "Tenant or plan_id missing"}, status=400)
 
+        # Fetch the new plan
         try:
-            plan = SubscriptionPlan.objects.get(id=plan_id)
+            plan = SubscriptionPlan.objects.get(id=int(plan_id))
         except SubscriptionPlan.DoesNotExist:
             return Response({"error": "Plan not found"}, status=404)
 
+        # Fetch tenant user and Stripe customer
         tenant_user = TenantUser.objects.filter(user=user, tenant=tenant).first()
         if not tenant_user or not tenant_user.stripe_customer_id:
             return Response({"error": "No Stripe customer found"}, status=400)
 
-        # Get default payment method
+        # Default payment method
         default_pm = getattr(tenant_user, "default_payment_method_id", None)
         if not default_pm:
-            return Response({"error": "No default payment method"}, status=400)
+            try:
+                stripe_customer = stripe.Customer.retrieve(tenant_user.stripe_customer_id)
+                default_pm = stripe_customer['invoice_settings']['default_payment_method']
+                if not default_pm:
+                    return Response({"error": "No default payment method. Add a card."}, status=400)
+                tenant_user.default_payment_method_id = default_pm
+                tenant_user.save()
+            except Exception as e:
+                logger.exception("Error retrieving Stripe customer default payment method")
+                return Response({"error": str(e)}, status=500)
+
+        # Fetch active subscription
+        subscription = TenantSubscription.objects.filter(tenant=tenant, active=True).first()
+        if not subscription or not subscription.stripe_subscription_id:
+            return Response({"error": "No active subscription to update"}, status=400)
 
         try:
-            stripe_sub = stripe.Subscription.create(
-                customer=tenant_user.stripe_customer_id,
-                items=[{"price": plan.stripe_price_id}],
-                default_payment_method=default_pm,
-                metadata={"tenant_subdomain": tenant.subdomain, "plan_id": str(plan.id)}
+            # Fetch subscription items
+            subscription_items = stripe.SubscriptionItem.list(subscription=subscription.stripe_subscription_id)
+            if not subscription_items.data:
+                return Response({"error": "Subscription has no items"}, status=400)
+
+            # Modify first item (primary plan)
+            item_id = subscription_items.data[0].id
+            stripe.Subscription.modify(
+                subscription.stripe_subscription_id,
+                cancel_at_period_end=False,
+                proration_behavior="create_prorations",
+                items=[{"id": item_id, "price": plan.stripe_price_id}],
+                default_payment_method=default_pm
             )
 
-            # Save subscription in DB
-            sub, _ = TenantSubscription.objects.get_or_create(tenant=tenant)
-            sub.plan = plan
-            sub.stripe_subscription_id = stripe_sub.id
-            sub.start_date = timezone.now()
-            sub.end_date = timezone.datetime.fromtimestamp(stripe_sub.current_period_end, tz=timezone.utc).date()
-            sub.active = True
-            sub.max_users = plan.max_users
-            sub.max_dashboards = plan.max_dashboards
-            sub.max_datasets = plan.max_datasets
-            sub.max_api_rows = plan.max_api_rows
-            sub.save()
+            # Immediately create and finalize invoice for proration
+            stripe.Invoice.create(
+                customer=tenant_user.stripe_customer_id,
+                auto_advance=True
+            )
 
-            return Response({"status": "success", "subscription": sub.id})
+            # Retrieve updated subscription to get current_period_end
+            stripe_sub = stripe.Subscription.retrieve(subscription.stripe_subscription_id)
+            end_timestamp = getattr(stripe_sub, 'current_period_end', None)
+
+            # Fallback if current_period_end missing
+            if not end_timestamp:
+                logger.warning("current_period_end missing, falling back to 30 days from now")
+                end_timestamp = int((timezone.now() + timedelta(days=30)).timestamp())
+
+            # Update subscription in DB
+            subscription.plan = plan
+            subscription.end_date = datetime.fromtimestamp(end_timestamp, tz=dt_timezone.utc).date()
+            subscription.max_users = plan.max_users
+            subscription.max_dashboards = plan.max_dashboards
+            subscription.max_datasets = plan.max_datasets
+            subscription.max_api_rows = plan.max_api_rows
+            subscription.save()
+
+            return Response({"status": "success", "subscription": subscription.id})
+
         except stripe.error.StripeError as e:
+            logger.exception("Stripe error during plan change")
+            return Response({"error": str(e)}, status=400)
+        except Exception as e:
+            logger.exception("Unexpected error during plan change")
+            return Response({"error": str(e)}, status=500)
+        
+
+class DeletePaymentMethod(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        user = request.user
+        payment_method_id = request.data.get("payment_method_id")
+        tenant = get_current_tenant()
+
+        if not payment_method_id or not tenant:
+            return Response({"error": "Missing payment_method_id or tenant"}, status=400)
+
+        tenant_user = TenantUser.objects.filter(user=user, tenant=tenant).first()
+        if not tenant_user or not tenant_user.stripe_customer_id:
+            return Response({"error": "Stripe customer not found"}, status=400)
+
+        try:
+            customer = stripe.Customer.retrieve(tenant_user.stripe_customer_id)
+            if customer.invoice_settings.default_payment_method == payment_method_id:
+                return Response({"error": "Cannot delete default payment method"}, status=400)
+
+            stripe.PaymentMethod.detach(payment_method_id)
+            return Response({"success": True})
+
+        except Exception as e:
             return Response({"error": str(e)}, status=400)

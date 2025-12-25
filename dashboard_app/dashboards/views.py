@@ -1,3 +1,6 @@
+import time
+import logging
+from django.utils import timezone
 from django.contrib.auth.models import User
 from django.contrib.auth.tokens import default_token_generator
 from django.core.mail import send_mail
@@ -39,9 +42,12 @@ from django.utils.decorators import method_decorator
 from .serializers import UserSerializer, GroupNestedSerializer, TenantSignupSerializer
 from tenants.middleware import get_current_tenant
 from tenants.models import TenantUser
-from subscriptions.utils.subscription_limits import get_active_subscription, has_reached_limit
+from subscriptions.utils.subscription_limits import enforce_subscription_limit
 from django.db.models import Q
 from .permissions import IsSuperAdmin
+from rest_framework.exceptions import PermissionDenied
+from rest_framework_simplejwt.tokens import AccessToken
+from datetime import timedelta
 
 
 
@@ -52,120 +58,139 @@ class UserViewSet(viewsets.ModelViewSet):
     serializer_class = UserSerializer
     permission_classes = [IsAuthenticated, IsSuperAdmin]
 
+    # -----------------------------
+    # Queryset (active by default)
+    # -----------------------------
     def get_queryset(self):
         tenant = get_current_tenant()
-        if tenant:
-            return User.objects.filter(tenantuser__tenant=tenant)
-        return User.objects.none()
+        if not tenant:
+            return User.objects.none()
 
+        qs = User.objects.filter(tenantuser__tenant=tenant)
+
+        include_deleted = self.request.query_params.get("include_deleted")
+        if include_deleted != "true":
+            qs = qs.filter(is_active=True)
+
+        return qs.order_by("first_name", "last_name")
+
+    # -----------------------------
+    # Create user (limit enforced)
+    # -----------------------------
     def perform_create(self, serializer):
         tenant = get_current_tenant()
-        user = serializer.save()
+        enforce_subscription_limit(tenant, resource="users")
+
+        user = serializer.save(is_active=True)
         TenantUser.objects.get_or_create(user=user, tenant=tenant)
 
-    # ---------- Single invite ----------
-    @action(detail=False, methods=["post"])
-    def invite(self, request):
+    # -----------------------------
+    # Soft delete (override DELETE)
+    # -----------------------------
+    def destroy(self, request, *args, **kwargs):
+        user = self.get_object()
+        user.is_active = False
+        user.save(update_fields=["is_active"])
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+    # -----------------------------
+    # Restore user
+    # -----------------------------
+    @action(detail=True, methods=["post"])
+    def restore(self, request, pk=None):
         tenant = get_current_tenant()
-        first_name = request.data.get("first_name", "")
-        last_name = request.data.get("last_name", "")
+        enforce_subscription_limit(tenant, resource="users")
+
+        try:
+            user = User.objects.get(
+                pk=pk,
+                tenantuser__tenant=tenant,
+                is_active=False
+            )
+        except User.DoesNotExist:
+            return Response(
+                {"detail": "User not found or already active"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        user.is_active = True
+        user.save(update_fields=["is_active"])
+
+        return Response({"message": "User restored successfully"})
+
+class ForgotPasswordView(APIView):
+    permission_classes = [AllowAny]
+    """
+    Handles forgot password requests:
+    - User submits email
+    - Generates a short-lived JWT for password reset
+    - Sends reset link via email
+    """
+
+    def post(self, request):
         email = request.data.get("email")
 
-        if not email:
-            return Response({"error": "Email required"}, status=400)
+        try:
+            user = User.objects.get(email=email)
+        except User.DoesNotExist:
+            # Do not reveal user existence for security
+            return Response({"message": "If the email exists, a reset link was sent"})
 
-        user, created = User.objects.get_or_create(
-            email=email,
-            defaults={
-                "username": email,
-                "first_name": first_name,
-                "last_name": last_name,
-                "is_active": True,
-            },
-        )
+        # Generate JWT for password reset
+        token = AccessToken.for_user(user)
+        token.set_exp(lifetime=timedelta(minutes=30))  # token expires in 30 minutes
+        token["type"] = "reset_password"
 
-        # Link to tenant
-        TenantUser.objects.get_or_create(user=user, tenant=tenant)
+        reset_link = f"{settings.FRONTEND_URL}/reset-password?token={str(token)}"
 
-        # Generate token
-        uid = urlsafe_base64_encode(force_bytes(user.pk))
-        token = default_token_generator.make_token(user)
-        link = f"{settings.FRONTEND_URL}/set-password?uid={uid}&token={token}"
-
-        # Send invitation email
         send_mail(
-            subject="Set your password",
-            message=f"Hello {user.first_name},\n\nSet your password by clicking this link:\n{link}",
+            subject="Reset your password",
+            message=f"Click here to reset your password:\n{reset_link}",
             from_email=settings.DEFAULT_FROM_EMAIL,
             recipient_list=[email],
         )
 
-        return Response({"message": "Invitation sent", "status": "pending", "uid": uid, "token": token})
+        return Response({"message": "Password reset email sent"})
 
-    # ---------- Bulk invite ----------
-    @action(detail=False, methods=["post"])
-    def bulk_invite(self, request):
-        tenant = get_current_tenant()
-        users_data = request.data.get("users", [])
-        created_users = []
 
-        for u in users_data:
-            first_name = u.get("first_name")
-            last_name = u.get("last_name")
-            email = u.get("email")
+class ResetPasswordView(APIView):
+    permission_classes = [AllowAny]
+    """
+    Handles password reset:
+    - Receives JWT + new password
+    - Validates JWT and updates password
+    """
 
-            if first_name and last_name and email:
-                user, created = User.objects.get_or_create(
-                    email=email,
-                    defaults={
-                        "username": email,
-                        "first_name": first_name,
-                        "last_name": last_name,
-                        "is_active": True,
-                    },
-                )
+    def post(self, request):
+        token_str = request.data.get("token")
+        new_password = request.data.get("password")
 
-                # Link to tenant
-                TenantUser.objects.get_or_create(user=user, tenant=tenant)
+        if not token_str or not new_password:
+            return Response({"error": "Token and password are required"},
+                            status=status.HTTP_400_BAD_REQUEST)
 
-                # Generate token
-                uid = urlsafe_base64_encode(force_bytes(user.pk))
-                token = default_token_generator.make_token(user)
-                link = f"{settings.FRONTEND_URL}/set-password?uid={uid}&token={token}"
+        try:
+            token = AccessToken(token_str)
+        except Exception:
+            return Response({"error": "Invalid token"},
+                            status=status.HTTP_400_BAD_REQUEST)
 
-                # Send invitation email
-                send_mail(
-                    subject="Set your password",
-                    message=f"Hello {user.first_name},\n\nSet your password by clicking this link:\n{link}",
-                    from_email=settings.DEFAULT_FROM_EMAIL,
-                    recipient_list=[email],
-                )
+        if token.get("type") != "reset_password":
+            return Response({"error": "Invalid token type"},
+                            status=status.HTTP_400_BAD_REQUEST)
 
-                user_data = UserSerializer(user).data
-                user_data.update({"uid": uid, "token": token})
-                created_users.append(user_data)
+        user_id = token["user_id"]
+        try:
+            user = User.objects.get(id=user_id)
+        except User.DoesNotExist:
+            return Response({"error": "User not found"},
+                            status=status.HTTP_404_NOT_FOUND)
 
-        return Response(
-            {"message": f"{len(created_users)} users invited successfully", "users": created_users},
-            status=status.HTTP_201_CREATED
-        )
+        user.set_password(new_password)
+        user.save()
 
-    # ---------- Delete user ----------
-    def destroy(self, request, *args, **kwargs):
-        self.get_object()  # Ensures tenant filtering
-        return super().destroy(request, *args, **kwargs)
+        return Response({"message": "Password reset successful"})
 
-    # ---------- Current user info ----------
-    @action(detail=False, methods=["get"], permission_classes=[IsAuthenticated])
-    def me(self, request):
-        user = request.user
-        data = {
-            "id": user.id,
-            "email": user.email,
-            "first_name": user.first_name,
-            "last_name": user.last_name,
-        }
-        return Response(data)
     
 class CurrentUserView(APIView):
     permission_classes = [IsAuthenticated]
@@ -213,7 +238,23 @@ class GroupViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         tenant = get_current_tenant()
-        return Group.objects.filter(tenant=tenant) if tenant else Group.objects.none()
+        if not tenant:
+            return Group.objects.none()
+
+        qs = Group.objects.filter(tenant=tenant)
+
+        # Allow restore & hard delete to access deleted records
+        if self.action in ["restore", "hard_delete"]:
+            return qs
+
+        # Recycle bin view
+        if self.request.query_params.get("recycle") == "true":
+            return qs.filter(is_deleted=True)
+
+        # Default: active only
+        return qs.filter(is_deleted=False)
+
+
 
     def get_serializer_class(self):
         if self.request.method in ["GET"]:
@@ -222,7 +263,12 @@ class GroupViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         tenant = get_current_tenant()
+
+        # 🚨 Enforce subscription dataset limit
+        enforce_subscription_limit(tenant, "groups")
+
         serializer.save(tenant=tenant)
+        
 
     @action(detail=True, methods=["post"])
     def assign_users(self, request, pk=None):
@@ -244,6 +290,33 @@ class GroupViewSet(viewsets.ModelViewSet):
         group.save()
         return Response({"success": True, "message": "Dashboards assigned"})
 
+    def destroy(self, request, *args, **kwargs):
+        group = self.get_object()
+
+        group.is_deleted = True
+        group.deleted_at = timezone.now()
+        group.save(update_fields=["is_deleted", "deleted_at"])
+
+        return Response(status=status.HTTP_204_NO_CONTENT)
+    
+    @action(detail=True, methods=["post"], url_path="restore")
+    def restore(self, request, pk=None):
+        group = self.get_object()
+
+        group.is_deleted = False
+        group.deleted_at = None
+        group.save(update_fields=["is_deleted", "deleted_at"])
+
+        return Response({"success": True})
+    
+    @action(detail=True, methods=["delete"])
+    def hard_delete(self, request, pk=None):
+        group = self.get_object()
+        group.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+
 
 
 # ---------- Data Sources ----------
@@ -253,20 +326,54 @@ class ApiDataSourceViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         tenant = get_current_tenant()
-        return ApiDataSource.objects.filter(tenant=tenant)
+        show_deleted = self.request.query_params.get("show_deleted") == "true"
+
+        qs = ApiDataSource.objects.filter(tenant=tenant)
+        return qs.filter(is_deleted=show_deleted) if show_deleted else qs.filter(is_deleted=False)
+
+    def get_object(self):
+        tenant = get_current_tenant()
+        return get_object_or_404(
+            ApiDataSource,
+            id=self.kwargs["pk"],
+            tenant=tenant
+        )
 
     def perform_create(self, serializer):
         tenant = get_current_tenant()
-        print("Current tenant:", tenant)  # Debug
+        enforce_subscription_limit(tenant, "datasources")
+
         serializer.save(
             tenant=tenant,
             created_by=self.request.user
         )
 
-    def get_object(self):
+    # ♻️ Soft delete
+    def destroy(self, request, *args, **kwargs):
+        obj = self.get_object()
+        obj.is_deleted = True
+        obj.save(update_fields=["is_deleted"])
+
+        return Response(
+            {"success": True, "message": "API source moved to recycle bin"},
+            status=status.HTTP_200_OK
+        )
+
+    # ♻️ Restore
+    @action(detail=True, methods=["post"])
+    def restore(self, request, pk=None):
         tenant = get_current_tenant()
-        obj = get_object_or_404(ApiDataSource, id=self.kwargs["pk"], tenant=tenant)
-        return obj
+        obj = get_object_or_404(
+            ApiDataSource.objects.filter(tenant=tenant),
+            id=pk
+        )
+        obj.is_deleted = False
+        obj.save(update_fields=["is_deleted"])
+
+        return Response(
+            {"success": True, "message": "API source restored"}
+        )
+
 
 
 # ---------- Datasets ----------
@@ -279,10 +386,22 @@ class DatasetViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         tenant = get_current_tenant()
-        return Dataset.objects.filter(tenant=tenant)
+        show_deleted = self.request.query_params.get("show_deleted")
+
+        qs = Dataset.objects.filter(tenant=tenant)
+
+        if show_deleted == "true":
+            return qs.filter(is_deleted=True)
+
+        return qs.filter(is_deleted=False)
+
 
     def perform_create(self, serializer):
         tenant = get_current_tenant()
+
+        # 🚨 Enforce subscription dataset limit
+        enforce_subscription_limit(tenant, "datasets")
+
         serializer.save(
             created_by=self.request.user,
             tenant=tenant
@@ -290,8 +409,12 @@ class DatasetViewSet(viewsets.ModelViewSet):
 
     def get_object(self):
         tenant = get_current_tenant()
-        obj = get_object_or_404(Dataset, id=self.kwargs["pk"], tenant=tenant)
-        return obj
+        return get_object_or_404(
+            Dataset.objects.all(),  # ❗️do NOT filter is_deleted here
+            id=self.kwargs["pk"],
+            tenant=tenant
+        )
+
 
     # ---------- Saved Dataset Run ----------
     @action(detail=True, methods=["post"])
@@ -362,9 +485,53 @@ class DatasetViewSet(viewsets.ModelViewSet):
 
         except requests.RequestException as e:
             return Response({"error": str(e)}, status=status.HTTP_502_BAD_GATEWAY)
+        
+
+    def destroy(self, request, *args, **kwargs):
+        dataset = self.get_object()
+        dataset.is_deleted = True
+        dataset.save()
+
+        return Response(
+            {"success": True, "message": "Dataset moved to recycle bin"},
+            status=status.HTTP_200_OK
+        )
+
+
+    @action(detail=True, methods=["post"])
+    def restore(self, request, pk=None):
+        dataset = self.get_object()
+
+        if not dataset.is_deleted:
+            return Response(
+                {"success": False, "message": "Dataset is not deleted."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        dataset.is_deleted = False
+        dataset.save()
+
+        return Response(
+            {"success": True, "message": "Dataset restored successfully."},
+            status=status.HTTP_200_OK
+        )
+    
+    
+    @action(detail=True, methods=["delete"])
+    def hard_delete(self, request, pk=None):
+        dataset = self.get_object()
+        dataset.delete()
+
+        return Response(
+            {"success": True, "message": "Dataset permanently deleted"},
+            status=status.HTTP_200_OK
+        )
+
 
 # Ad-hoc run endpoint: POST /api/datasets/run/
 from rest_framework.views import APIView
+logger = logging.getLogger(__name__)  # use Django logger
+
 class DatasetRunAdhocView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -378,58 +545,93 @@ class DatasetRunAdhocView(APIView):
         params = data.get("query_params", {})
 
         if not source_id or not endpoint:
-            return Response({"error": "api_source and endpoint required"}, status=status.HTTP_400_BAD_REQUEST)
+            return Response(
+                {"error": "api_source and endpoint required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         source = get_object_or_404(ApiDataSource, pk=source_id)
-        # build a pseudo-dataset object
         dataset = Dataset(name="__adhoc__", api_source=source, endpoint=endpoint, query_params=params)
-        return _run_dataset_and_respond(dataset, {})
+
+        return run_dataset_wicket(dataset)
 
 
-def _run_dataset_and_respond(dataset, overrides):
-    """
-    Core runner: builds URL, applies auth, fetches data and returns JSON (list of dicts)
-    """
+def run_dataset_wicket(dataset):
     source = dataset.api_source
     endpoint = dataset.endpoint or ""
-    # endpoint may be relative; join with base_url
     url = urljoin(source.base_url.rstrip("/") + "/", endpoint.lstrip("/"))
 
-    # params: start from dataset.query_params then overrides
+    # Merge query params
     params = {}
     if dataset.query_params:
         params.update(dataset.query_params)
-    params.update(overrides or {})
 
     headers = {}
-    if source.auth_type == "API_KEY_HEADER" and source.api_key:
-        headers[source.api_key_header] = source.api_key
-    elif source.auth_type == "BEARER" and source.api_key:
-        headers["Authorization"] = f"Bearer {source.api_key}"
-    elif source.auth_type == "API_KEY_QUERY" and source.api_key:
-        params.update({"api_key": source.api_key})
 
+    logger.info(f"[DatasetRun] URL={url}, Auth={source.auth_type}, Params={params}")
+
+    # --- AUTH LOGIC ---
     try:
+        if source.auth_type == "API_KEY_HEADER" and source.api_key:
+            headers[source.api_key_header] = source.api_key
+            logger.info(f"[Auth] API Key in header: {source.api_key_header}=<hidden>")
+
+        elif source.auth_type == "BEARER" and source.api_key:
+            headers["Authorization"] = f"Bearer {source.api_key}"
+            logger.info("[Auth] Bearer token used")
+
+        elif source.auth_type == "API_KEY_QUERY" and source.api_key:
+            params.update({"api_key": source.api_key})
+            logger.info("[Auth] API Key added to query params")
+
+        elif source.auth_type == "JWT_HS256":
+            # Wicket JWT requirements
+            payload = {
+                "exp": int(time.time()) + (source.jwt_ttl_seconds or 300),  # short expiry
+                "sub": source.jwt_subject,  # API admin UUID
+                "aud": source.jwt_audience,  # tenant API URL
+            }
+            if source.jwt_issuer:
+                payload["iss"] = source.jwt_issuer
+
+            token = jwt.encode(payload, source.jwt_secret, algorithm="HS256")
+            headers["Authorization"] = f"Bearer {token}"
+            logger.info(f"[Auth] JWT token generated (truncated)={token[:20]}...")
+
+        else:
+            logger.warning(f"[Auth] No auth applied for auth_type={source.auth_type}")
+
+    except Exception as e:
+        logger.exception("JWT generation failed")
+        return Response({"error": f"JWT generation failed: {str(e)}"}, status=500)
+
+    # --- MAKE REQUEST ---
+    try:
+        logger.info(f"[Request] GET {url} Headers={headers} Params={params}")
         resp = requests.get(url, headers=headers, params=params, timeout=15)
+        logger.info(f"[Response] Status={resp.status_code} Body={resp.text[:200]}")
+
         resp.raise_for_status()
         data = resp.json()
-        # normalize: prefer list of dicts; if data has 'results' or 'data' keys, try to extract
+
+        # normalize list of dicts
         if isinstance(data, dict):
             for k in ("results", "data", "rows"):
                 if k in data and isinstance(data[k], list):
                     data = data[k]
                     break
             else:
-                # if dict of records, try convert
-                # e.g., {id: {...}, ...} -> list
                 if all(isinstance(v, dict) for v in data.values()):
                     data = list(data.values())
                 else:
-                    # Can't reliably convert - return the dict directly
                     return Response({"result": data})
+
         return Response(data)
+
     except requests.RequestException as e:
-        return Response({"error": str(e)}, status=status.HTTP_502_BAD_GATEWAY)
+        logger.exception("Request to Wicket failed")
+        return Response({"error": str(e)}, status=502)
+
 
 
 # ---------- Charts ----------
@@ -543,7 +745,6 @@ class DashboardViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         tenant = get_current_tenant()
         user = self.request.user
-
         if not tenant:
             return Dashboard.objects.none()
 
@@ -555,30 +756,16 @@ class DashboardViewSet(viewsets.ModelViewSet):
             Q(groups__users=user)
         ).distinct()
 
-    # ---------- Assign tenant on creation ----------
+    # ---------- Assign tenant on creation with limit enforcement ----------
     def perform_create(self, serializer):
         tenant = get_current_tenant()
+        if not tenant:
+            raise PermissionDenied("Tenant not detected. Cannot create dashboard.")
 
-        # ---- 1. Get active subscription ----
-        sub = get_active_subscription()
+        # Enforce dashboard subscription limit
+        enforce_subscription_limit(tenant, resource="dashboards")
 
-        if not sub:
-            return Response(
-                {"error": "No active subscription. Please subscribe to a plan."},
-                status=403,
-            )
-
-        # ---- 2. Count dashboards ----
-        dashboard_count = Dashboard.objects.filter(tenant=tenant).count()
-        max_dashboards = sub.plan.max_dashboards
-
-        # ---- 3. Enforce limit ----
-        if has_reached_limit(dashboard_count, max_dashboards):
-            raise PermissionDenied(
-                f"Dashboard limit reached ({max_dashboards}). Upgrade your plan."
-            )
-
-        # ---- 4. Proceed normally ----
+        # Proceed normally
         serializer.save(created_by=self.request.user, tenant=tenant)
 
     # ---------- Tenant-aware single object ----------
@@ -610,8 +797,11 @@ class DashboardViewSet(viewsets.ModelViewSet):
 
         return Response(DashboardChartSerializer(dc).data)
 
+    # ---------- Delete dashboard ----------
+    def destroy(self, request, *args, **kwargs):
+        self.get_object()  # ensures tenant filtering
+        return super().destroy(request, *args, **kwargs)
+    
 
-        # ---------- Delete dashboard ----------
-        def destroy(self, request, *args, **kwargs):
-            self.get_object()  # ensures tenant filtering
-            return super().destroy(request, *args, **kwargs)
+
+

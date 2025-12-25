@@ -30,4 +30,6 @@ urlpatterns = [
     path("stripe-webhook/", views.stripe_webhook, name="stripe-webhook"),
 
     path("change-plan/", views.CreateSubscriptionWithSavedCardView.as_view(), name="change-plan"),
+
+    path("delete-payment-method/", views.DeletePaymentMethod.as_view(), name="delete-payment-method"),
 ]

@@ -7,7 +7,9 @@ class SubscriptionPlan(models.Model):
     name = models.CharField(max_length=80)
     slug = models.SlugField(max_length=80, unique=True)
     price = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    currency = models.CharField(max_length=3, default="cad")  # e.g., 'usd', 'cad'
     max_users = models.IntegerField(default=5)
+    max_groups = models.IntegerField(default=5)
     max_dashboards = models.IntegerField(default=10)
     max_datasets = models.IntegerField(default=10)
     max_api_rows = models.BigIntegerField(default=10000)
@@ -33,6 +35,7 @@ class TenantSubscription(models.Model):
 
     # cached limits
     max_users = models.IntegerField(default=0)
+    max_groups = models.IntegerField(default=5)
     max_dashboards = models.IntegerField(default=0)
     max_datasets = models.IntegerField(default=0)
     max_api_rows = models.BigIntegerField(default=0)

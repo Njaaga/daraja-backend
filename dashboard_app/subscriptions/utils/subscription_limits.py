@@ -1,23 +1,82 @@
-from tenants.middleware import get_current_tenant
-from subscriptions.models import SubscriptionPlan, TenantSubscription
-from django.utils import timezone
+from rest_framework.exceptions import PermissionDenied
+
+from subscriptions.models import TenantSubscription
+from dashboards.models import ApiDataSource
+from dashboards.models import Dataset
+from dashboards.models import Dashboard
+from dashboards.models import Group
+from tenants.models import TenantUser
+from django.contrib.auth import get_user_model
+
+User = get_user_model()
 
 
-def get_active_subscription():
-    tenant = get_current_tenant()
-    if not tenant:
-        return None
-    
-    try:
-        sub = TenantSubscription.objects.get(tenant=tenant)
-        if sub.active and (not sub.end_date or sub.end_date >= timezone.now().date()):
-            return sub
-        return None
-    except TenantSubscription.DoesNotExist:
-        return None
+RESOURCE_MAP = {
+    "datasources": {
+        "model": ApiDataSource,
+        "field": "max_api_rows",
+        "label": "datasources",
+    },
+
+    "datasets": {
+        "model": Dataset,
+        "field": "max_datasets",
+        "label": "datasets",
+    },
+
+    "dashboards": {
+        "model": Dashboard,
+        "field": "max_dashboards",
+        "label": "dashboards",
+    },
+    "users": {
+        "model": TenantUser,
+        "field": "max_users",
+        "label": "users",
+    },
+        "groups": {
+        "model": Group,
+        "field": "max_groups",
+        "label": "groups",
+    },
+}
 
 
-def has_reached_limit(count, limit):
+def enforce_subscription_limit(tenant, resource: str):
+    """
+    Generic subscription limit enforcement.
+
+    resource:
+        - 'datasources'
+        - 'datasets'
+        - 'dashboards'
+        - 'users'
+    """
+
+    config = RESOURCE_MAP.get(resource)
+    if not config:
+        raise ValueError(f"Unknown subscription resource: {resource}")
+
+    sub = (
+        TenantSubscription.objects
+        .filter(tenant=tenant, active=True)
+        .select_related("plan")
+        .first()
+    )
+
+    if not sub:
+        raise PermissionDenied("No active subscription.")
+
+    limit = getattr(sub, config["field"])
+
+    # Unlimited
     if limit is None:
-        return False  # unlimited
-    return count >= limit
+        return
+
+    current_count = config["model"].objects.filter(tenant=tenant).count()
+
+    if current_count >= limit:
+        raise PermissionDenied(
+            f"{config['label'].capitalize()} limit reached "
+            f"({limit}). Please upgrade your plan."
+        )

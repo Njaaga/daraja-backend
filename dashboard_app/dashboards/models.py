@@ -3,38 +3,92 @@ from django.contrib.auth.models import User
 from django.utils import timezone
 
 
-
 class ApiDataSource(models.Model):
     AUTH_TYPES = [
         ("NONE", "None"),
         ("API_KEY_HEADER", "API Key (Header)"),
-        ("BEARER", "Bearer Token"),
         ("API_KEY_QUERY", "API Key (Query Param)"),
+        ("BEARER", "Bearer Token"),
+        ("JWT_HS256", "JWT (HS256)"),
     ]
-    
-    
+
     name = models.CharField(max_length=255)
     base_url = models.URLField()
     auth_type = models.CharField(max_length=32, choices=AUTH_TYPES, default="NONE")
-    api_key = models.CharField(max_length=1024, blank=True, help_text="Write-only; used for requests")
-    api_key_header = models.CharField(max_length=255, default="Authorization")
-    created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True)
+
+    # 🔐 API Key auth
+    api_key = models.CharField(max_length=1024, blank=True)
+    api_key_name = models.CharField(
+        max_length=255,
+        default="Authorization",
+        help_text="Header name or query param name"
+    )
+
+    # 🔐 Bearer auth
+    bearer_token = models.CharField(max_length=2048, blank=True)
+
+    # 🔐 JWT auth (HS256)
+    jwt_secret = models.CharField(max_length=1024, blank=True, null=True)
+    jwt_subject = models.CharField(max_length=255, blank=True, null=True)
+    jwt_audience = models.CharField(max_length=255, blank=True, null=True)
+    jwt_issuer = models.CharField(max_length=255, blank=True, null=True)
+    jwt_ttl_seconds = models.IntegerField(default=300)
+
+    tenant = models.ForeignKey(
+        "tenants.Tenant",
+        on_delete=models.CASCADE,
+        related_name="api_sources",
+        null=True,      # ✅ MUST be True for now
+        blank=True,
+    )
+
+    created_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True
+    )
     created_at = models.DateTimeField(default=timezone.now)
+
+    # ♻️ Soft delete
+    is_deleted = models.BooleanField(default=False)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["tenant", "is_deleted"]),
+        ]
+        ordering = ["-created_at"]
+
+    def save(self, *args, **kwargs):
+        # Normalize base_url
+        if self.base_url:
+            self.base_url = self.base_url.rstrip("/")
+        super().save(*args, **kwargs)
 
     def __str__(self):
         return self.name
 
 
+
 class Dataset(models.Model):
     name = models.CharField(max_length=255)
-    api_source = models.ForeignKey(ApiDataSource, on_delete=models.CASCADE, related_name="datasets")
-    endpoint = models.CharField(max_length=1024, help_text="Path appended to base_url, e.g. /v1/data")
+    api_source = models.ForeignKey(
+        ApiDataSource,
+        on_delete=models.CASCADE,
+        related_name="datasets"
+    )
+    endpoint = models.CharField(max_length=1024)
     query_params = models.JSONField(default=dict, blank=True)
+
     created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True)
     created_at = models.DateTimeField(default=timezone.now)
 
+    # 🔥 recycle bin
+    is_deleted = models.BooleanField(default=False)
+
     def __str__(self):
-        return f"{self.name} ({self.api_source.name})"
+        return self.name
+
 
 
 class Chart(models.Model):
@@ -143,6 +197,20 @@ class Group(models.Model):
     name = models.CharField(max_length=255)
     users = models.ManyToManyField(User, blank=True, related_name="dashboard_groups")
     dashboards = models.ManyToManyField(Dashboard, blank=True, related_name="groups")
+
+    # ✅ Recycle bin fields
+    is_deleted = models.BooleanField(default=False)
+    deleted_at = models.DateTimeField(null=True, blank=True)
+
+    def soft_delete(self):
+        self.is_deleted = True
+        self.deleted_at = timezone.now()
+        self.save()
+
+    def restore(self):
+        self.is_deleted = False
+        self.deleted_at = None
+        self.save()
 
     def __str__(self):
         return self.name

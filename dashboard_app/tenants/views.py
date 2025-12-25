@@ -1,6 +1,6 @@
 from django.conf import settings
 from rest_framework.decorators import api_view, permission_classes
-from rest_framework.permissions import AllowAny
+from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from django.contrib.auth.models import User
 from django.contrib.auth.hashers import make_password
@@ -21,8 +21,33 @@ from django.core.mail import send_mail
 import stripe
 stripe.api_key = settings.STRIPE_SECRET_KEY
 
+from django.contrib.auth import get_user_model
 
-@api_view(['POST'])
+User = get_user_model()
+
+
+def build_frontend_url(request, path: str) -> str:
+    """
+    Builds a subdomain-aware frontend URL.
+    - localhost → http://tenant.localhost:3000
+    - production → https://tenant.domain.com
+    """
+
+    protocol = "https" if not settings.DEBUG else "http"
+
+    raw_host = request.get_host().split(":")[0]
+
+    # DEV (localhost)
+    if "localhost" in raw_host:
+        frontend_port = getattr(settings, "FRONTEND_PORT", 3000)
+        return f"{protocol}://{raw_host}:{frontend_port}{path}"
+
+    # PROD
+    frontend_domain = getattr(settings, "FRONTEND_DOMAIN", raw_host)
+    return f"{protocol}://{frontend_domain}{path}"
+
+
+@api_view(["POST"])
 @permission_classes([AllowAny])
 def tenant_signup(request):
     name = request.data.get("name")
@@ -41,53 +66,81 @@ def tenant_signup(request):
         return Response({"error": "Email already registered"}, status=400)
 
     # -------------------- Create Tenant --------------------
-    tenant = Tenant.objects.create(name=name, subdomain=subdomain)
+    tenant = Tenant.objects.create(
+        name=name,
+        subdomain=subdomain,
+    )
 
     # -------------------- Create Stripe Customer --------------------
     try:
         stripe_customer = stripe.Customer.create(
             name=name,
             email=email,
-            metadata={"tenant_id": tenant.id, "subdomain": subdomain}
+            metadata={
+                "tenant_id": tenant.id,
+                "subdomain": subdomain,
+            },
         )
         tenant.stripe_customer_id = stripe_customer.id
         tenant.save()
     except Exception as e:
         tenant.delete()
-        return Response({"error": f"Failed to create Stripe customer: {str(e)}"}, status=500)
+        return Response(
+            {"error": f"Stripe customer creation failed: {str(e)}"},
+            status=500,
+        )
 
-    # -------------------- Create Superadmin User (Inactive) --------------------
+    # -------------------- Create Superadmin User --------------------
     user = User.objects.create_user(
         username=email,
         email=email,
         password=password,
         is_active=False,
-        is_superuser=True,  # Make superadmin
-        is_staff=True
+        is_staff=True,
+        is_superuser=True,
     )
 
-    TenantUser.objects.create(user=user, tenant=tenant)
+    TenantUser.objects.create(
+        tenant=tenant,
+        user=user,
+        stripe_customer_id=stripe_customer.id,
+        is_superadmin = True,
+
+    )
 
     # -------------------- Email Verification --------------------
     uid = urlsafe_base64_encode(force_bytes(user.pk))
     token = default_token_generator.make_token(user)
 
-    # Include tenant subdomain in the verification link
-    protocol = "https" if request.is_secure() else "http"
-    host = f"{subdomain}.{request.get_host().split(':')[0]}"  # e.g., clientc.localhost
-    verify_link = f"{protocol}://{host}/verify-email?uid={uid}&token={token}"
+    verify_url = build_frontend_url(
+        request,
+        f"/verify-email?uid={uid}&token={token}",
+    )
 
     send_mail(
         subject="Verify your email",
-        message=f"Welcome!\n\nClick the link below to verify your email:\n{verify_link}",
+        message=(
+            f"Welcome to {tenant.name}!\n\n"
+            f"Please verify your email by clicking the link below:\n\n"
+            f"{verify_url}\n\n"
+            f"If you did not sign up, please ignore this email."
+        ),
         from_email=settings.DEFAULT_FROM_EMAIL,
         recipient_list=[email],
     )
 
-    return Response({
-        "message": "Signup successful. Check your email to verify your account.",
-        "stripe_customer_id": tenant.stripe_customer_id,
-    }, status=201)
+    return Response(
+        {
+            "message": "Signup successful. Please verify your email.",
+            "tenant": {
+                "id": tenant.id,
+                "name": tenant.name,
+                "subdomain": tenant.subdomain,
+            },
+            "stripe_customer_id": tenant.stripe_customer_id,
+        },
+        status=201,
+    )
 
 
 
@@ -115,62 +168,99 @@ def verify_email(request):
 
 
 
-@api_view(['POST'])
+@api_view(["POST"])
 @permission_classes([AllowAny])
 def tenant_login(request):
     """
-    Tenant-aware login that returns JWT access & refresh tokens,
-    user role, and superadmin status for frontend.
+    Tenant-aware login.
+    Tenant is resolved from the user's tenant membership,
+    NOT from frontend input.
     """
+
     email = request.data.get("email")
     password = request.data.get("password")
-    tenant_subdomain = request.data.get("tenant")
 
-    if not email or not password or not tenant_subdomain:
-        return Response({"error": "All fields are required"}, status=400)
-
-    # Verify tenant exists
-    try:
-        tenant = Tenant.objects.get(subdomain=tenant_subdomain)
-    except Tenant.DoesNotExist:
-        return Response({"error": "Tenant not found"}, status=404)
+    if not email or not password:
+        return Response(
+            {"error": "Email and password are required"},
+            status=400
+        )
 
     # Authenticate user
     user = authenticate(request, username=email, password=password)
     if not user:
         return Response({"error": "Invalid credentials"}, status=401)
 
-    # Verify user belongs to this tenant
-    if not TenantUser.objects.filter(user=user, tenant=tenant).exists():
-        return Response({"error": "User does not belong to this tenant"}, status=403)
+    # Resolve tenant via membership
+    tenant_user = (
+        TenantUser.objects
+        .select_related("tenant")
+        .filter(user=user)
+        .first()
+    )
+
+    if not tenant_user:
+        return Response(
+            {"error": "User is not assigned to any tenant"},
+            status=403
+        )
+
+    tenant = tenant_user.tenant
 
     # Generate JWT tokens
     refresh = RefreshToken.for_user(user)
-    access_token = str(refresh.access_token)
-    refresh_token = str(refresh)
 
-    # Optional: include subscription info for frontend
+    # Subscription info (safe)
     subscription = getattr(user, "subscription", None)
     subscription_data = {
         "is_active": subscription.is_active if subscription else False,
-        "plan": subscription.plan.name if subscription and subscription.plan else None
+        "plan": subscription.plan.name if subscription and subscription.plan else None,
     }
 
-    # Determine role and superadmin
-    is_superadmin = user.is_superuser  # or your custom superadmin logic
+    # Role & superadmin
+    is_superadmin = user.is_superuser
     role = "superadmin" if is_superadmin else getattr(user, "role", "user")
 
-    # Return response
     return Response({
-        "access": access_token,
-        "refresh": refresh_token,
+        "access": str(refresh.access_token),
+        "refresh": str(refresh),
+
+        # 🔑 THIS IS THE IMPORTANT PART
+        "tenant": tenant.subdomain,  # ✅ slug / subdomain ONLY
+
         "email": user.email,
-        "tenant": tenant.name,
         "subscription": subscription_data,
         "is_superadmin": is_superadmin,
         "user": {
             "id": user.id,
             "email": user.email,
-            "role": role
-        }
+            "role": role,
+        },
+    })
+
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def current_user(request):
+    user = request.user
+    tenant_user = getattr(user, "tenantuser", None)
+    tenant = tenant_user.tenant if tenant_user else None
+    subscription = getattr(tenant, "tenantsubscription", None)
+
+    subscription_data = {
+        "is_active": subscription.active if subscription else False,
+        "plan": subscription.plan.name if subscription and subscription.plan else None,
+    }
+
+    return Response({
+        "email": user.email,
+        "tenant": tenant.subdomain if tenant else None,
+        "subscription": subscription_data,
+        "is_superadmin": user.is_superuser,
+        "user": {
+            "id": user.id,
+            "email": user.email,
+            "role": "superadmin" if user.is_superuser else getattr(user, "role", "user"),
+        },
     })

@@ -10,7 +10,11 @@ from .views import (
     DatasetRunAdhocView,
     ChartViewSet,
     CurrentUserView,
+    ForgotPasswordView,
+    ResetPasswordView,
 )
+
+from django.contrib.auth import views as auth_views
 
 # =========================================================
 # PROTECTED ROUTES (REQUIRE AUTH via DRF)
@@ -28,6 +32,9 @@ urlpatterns = [
     # all secured authenticated API endpoints
     path("", include(router.urls)),
 
+    path("forgot-password/", ForgotPasswordView.as_view(), name="forgot-password"),
+
+    path("reset-password/", ResetPasswordView.as_view(), name="reset-password"),
 
     # =========================================================
     # PUBLIC ENDPOINT (NO AUTH REQUIRED)
@@ -39,4 +46,5 @@ urlpatterns = [
     path("datasets/run/", DatasetRunAdhocView.as_view(), name="datasets-adhoc-run"),
 
     path('users/me/', CurrentUserView.as_view(), name='current-user'),
+
 ]

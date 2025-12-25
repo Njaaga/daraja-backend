@@ -26,6 +26,7 @@ class TenantUser(models.Model):
     is_superadmin = models.BooleanField(default=False)
 
     stripe_customer_id = models.CharField(max_length=255, blank=True, null=True)
+    default_payment_method_id = models.CharField(max_length=255, blank=True, null=True)
 
     def __str__(self):
         return f"{self.user.email} - {self.tenant.name}"
