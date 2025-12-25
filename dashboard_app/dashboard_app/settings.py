@@ -30,6 +30,7 @@ ALLOWED_HOSTS = [
     "localhost",
     "127.0.0.1",
     "stepless-dozy-lakeisha.ngrok-free.dev",  # <- add your ngrok URL here
+    "18.220.106.255",
 ]
 
 
