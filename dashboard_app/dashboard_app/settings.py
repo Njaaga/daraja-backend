@@ -203,3 +203,12 @@ AUTHENTICATION_BACKENDS = [
 STRIPE_SECRET_KEY = "sk_test_51ScWR0RmVC1QU5lPZUt0aPkWsRf1JmelEUZVAQMkBoaiEXJ8qM0L67OHCs5vSdCNC0QJ87wCcMwgOet8nljkyejA00gBLav9IJ"
 STRIPE_PUBLISHABLE_KEY = "pk_test_51ScWR0RmVC1QU5lP25HlClhQeBrsGTdakbyxp39Jl0FIThrlsIz6LPAoy5BOFUZctIdSC5OQFu0mY9O4G9MLT4H400lzx7zxmK"
 STRIPE_WEBHOOK_SECRET = "whsec_3TrmAjNN5tdAtqvux04Yp7M9zsxZtJoo"
+
+from pathlib import Path
+
+BASE_DIR = Path(__file__).resolve().parent.parent
+
+STATIC_URL = "/static/"
+
+STATIC_ROOT = BASE_DIR / "staticfiles"
+
