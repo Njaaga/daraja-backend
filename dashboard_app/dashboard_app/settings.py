@@ -4,10 +4,8 @@ Production Django settings for dashboard_app project.
 
 from pathlib import Path
 import os
-from dotenv import load_dotenv
 
 # Load environment variables from .env
-load_dotenv()
 
 # Build paths
 BASE_DIR = Path(__file__).resolve().parent.parent
