@@ -106,7 +106,7 @@ DATABASES = {
         'NAME': 'darajareportapp',
         'USER': 'darajareportuser',
         'PASSWORD': 'darajaapp',
-        'HOST': 'dashboard-db.c3abcxyz.us-east-1.rds.amazonaws.com',
+        'HOST': 'darajareport-app.c746kqoy2uqe.us-east-2.rds.amazonaws.com',
         'PORT': '5432',
         'CONN_MAX_AGE': 60,
         'OPTIONS': {
