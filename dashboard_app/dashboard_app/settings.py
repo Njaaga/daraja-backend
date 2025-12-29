@@ -62,6 +62,7 @@ CORS_ALLOW_ALL_ORIGINS = False
 CORS_ALLOW_CREDENTIALS = True
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:3000",
+    "https://daraja-frontend-dl85.vercel.app",
 ]
 CORS_ALLOW_HEADERS = [
     "authorization",
@@ -72,7 +73,7 @@ CORS_ALLOW_HEADERS = [
 ]
 CORS_ALLOW_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
 
-FRONTEND_URL = "http://localhost:3000"
+FRONTEND_URL = "https://daraja-frontend-dl85.vercel.app"
 
 # -------------------------------
 # URLS & TEMPLATES
