@@ -103,14 +103,18 @@ WSGI_APPLICATION = 'dashboard_app.wsgi.application'
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.postgresql',
-        'NAME': os.environ.get("DB_NAME", "login_functionality_db"),
-        'USER': os.environ.get("DB_USER", "login_functionality_user"),
-        'PASSWORD': os.environ.get("DB_PASSWORD", ""),
-        'HOST': os.environ.get("DB_HOST", "localhost"),
-        'PORT': "5432",
+        'NAME': 'darajareportapp',
+        'USER': 'darajareportuser',
+        'PASSWORD': 'darajaapp',
+        'HOST': 'dashboard-db.c3abcxyz.us-east-1.rds.amazonaws.com',
+        'PORT': '5432',
         'CONN_MAX_AGE': 60,
+        'OPTIONS': {
+            'sslmode': 'require',  # REQUIRED for AWS RDS
+        },
     }
 }
+
 
 # -------------------------------
 # PASSWORD VALIDATION
