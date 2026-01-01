@@ -18,8 +18,8 @@ SECRET_KEY = os.environ.get("DJANGO_SECRET_KEY", "replace-me-in-production")
 DEBUG = False
 
 ALLOWED_HOSTS = [
-    "18.220.106.255",         # Your EC2 public IP
     "https://daraja-frontend-dl85.vercel.app",         # Optional domain
+    "18.220.106.255",         # Your EC2 public IP
 ]
 
 # -------------------------------
