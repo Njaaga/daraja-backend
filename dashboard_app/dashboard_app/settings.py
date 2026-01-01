@@ -19,7 +19,7 @@ DEBUG = False
 
 ALLOWED_HOSTS = [
     "18.220.106.255",         # Your EC2 public IP
-    "yourdomain.com",         # Optional domain
+    "https://daraja-frontend-dl85.vercel.app",         # Optional domain
 ]
 
 # -------------------------------
