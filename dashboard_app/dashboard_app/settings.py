@@ -74,7 +74,7 @@ CORS_ALLOW_HEADERS = [
 ]
 CORS_ALLOW_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
 
-FRONTEND_URL = "https://daraja-frontend-dl85.vercel.app"
+FRONTEND_URL = "https://daraja-frontend-rvul.vercel.app"
 
 # -------------------------------
 # URLS & TEMPLATES
