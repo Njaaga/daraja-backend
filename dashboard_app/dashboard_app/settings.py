@@ -19,7 +19,7 @@ DEBUG = False
 
 ALLOWED_HOSTS = [
     "18.220.106.255",         # Your EC2 public IP,
-    "https://daraja-frontend-dl85.vercel.app",         # Optional domain
+    "https://daraja-frontend-rvul.vercel.app",         # Optional domain
     
 ]
 
@@ -63,7 +63,7 @@ CORS_ALLOW_ALL_ORIGINS = False
 CORS_ALLOW_CREDENTIALS = True
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:3000",
-    "https://daraja-frontend-dl85.vercel.app",
+    "https://daraja-frontend-rvul.vercel.app",
 ]
 CORS_ALLOW_HEADERS = [
     "authorization",
