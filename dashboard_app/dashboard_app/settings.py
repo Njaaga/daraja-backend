@@ -14,7 +14,6 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # SECURITY
 # --------------------------------------------------
 SECRET_KEY = os.environ.get("DJANGO_SECRET_KEY", "replace-me-in-production")
-
 DEBUG = False
 
 ALLOWED_HOSTS = [
@@ -27,6 +26,7 @@ ALLOWED_HOSTS = [
 # APPLICATIONS
 # --------------------------------------------------
 INSTALLED_APPS = [
+    # Django default apps
     "django.contrib.admin",
     "django.contrib.auth",
     "django.contrib.contenttypes",
@@ -50,7 +50,7 @@ INSTALLED_APPS = [
 # MIDDLEWARE (ORDER MATTERS)
 # --------------------------------------------------
 MIDDLEWARE = [
-    "corsheaders.middleware.CorsMiddleware",
+    "corsheaders.middleware.CorsMiddleware",  # Must be first
     "django.middleware.security.SecurityMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
@@ -66,7 +66,7 @@ MIDDLEWARE = [
 ]
 
 # --------------------------------------------------
-# CORS & CSRF (FIXED)
+# CORS & CSRF (fixed)
 # --------------------------------------------------
 CORS_ALLOWED_ORIGINS = [
     "https://daraja-frontend-dl85.vercel.app",
@@ -156,13 +156,13 @@ AUTHENTICATION_BACKENDS = [
 ]
 
 # --------------------------------------------------
-# DJANGO REST FRAMEWORK (CORS-SAFE)
+# DJANGO REST FRAMEWORK
 # --------------------------------------------------
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": (
         "rest_framework_simplejwt.authentication.JWTAuthentication",
     ),
-    # IMPORTANT: Allow OPTIONS / signup without auth
+    # Allow signup / preflight requests without auth
     "DEFAULT_PERMISSION_CLASSES": (
         "rest_framework.permissions.AllowAny",
     ),
