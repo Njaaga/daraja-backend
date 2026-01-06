@@ -71,6 +71,7 @@ CORS_ALLOW_HEADERS = [
     "x-tenant-slug",
     "accept",
     "origin",
+    "x-csrftoken",
 ]
 CORS_ALLOW_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
 
