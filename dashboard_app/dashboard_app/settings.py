@@ -65,6 +65,11 @@ CORS_ALLOWED_ORIGINS = [
     "http://localhost:3000",
     "https://daraja-frontend-dl85.vercel.app",
 ]
+
+CSRF_TRUSTED_ORIGINS = [
+    "https://daraja-frontend-dl85.vercel.app",
+]
+
 CORS_ALLOW_HEADERS = [
     "authorization",
     "content-type",
