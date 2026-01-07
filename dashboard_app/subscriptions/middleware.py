@@ -35,6 +35,15 @@ class SubscriptionEnforcementMiddleware(MiddlewareMixin):
     expiration, and plan-based quotas.
     """
 
+    path = request.path.rstrip("/")
+
+    # --------------------------------------------------
+    # Always allow exempt paths (Stripe, auth, public)
+    # --------------------------------------------------
+    for prefix in self.EXEMPT_PREFIXES:
+        if path.startswith(prefix.rstrip("/")):
+            return None
+
     FREE_PATHS = [
         "/api/tenants/login/",
         "/api/tenants/verify-email/",
