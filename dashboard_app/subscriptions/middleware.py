@@ -39,7 +39,7 @@ class SubscriptionEnforcementMiddleware(MiddlewareMixin):
     expiration, and plan-based quotas.
     """
 
-    EXEMPT_PREFIXES = [
+    FREE_PATHS = [
         "/api/tenants/login/",
         "/api/tenants/verify-email/",
         "/api/logout/",
