@@ -1,38 +1,36 @@
 from rest_framework import permissions
 from django.utils import timezone
 from tenants.models import TenantUser
-from .models import TenantSubscription
+from subscriptions.models import TenantSubscription
 
 class IsTenantSubscribed(permissions.BasePermission):
+    message = "Active subscription required."
+
     def has_permission(self, request, view):
         user = request.user
-        print("User:", user)
-        if not user.is_authenticated:
-            print("Not authenticated")
+
+        if not user or not user.is_authenticated:
             return False
 
-        tenant_user = TenantUser.objects.filter(user=user).first()
-        print("TenantUser:", tenant_user)
+        tenant_user = TenantUser.objects.filter(user=user).select_related("tenant").first()
         if not tenant_user:
             return False
 
         tenant = tenant_user.tenant
-        print("Tenant:", tenant)
         if not tenant:
             return False
 
-        subscription = getattr(tenant, "tenantsubscription", None)
-        print("Subscription:", subscription)
+        subscription = (
+            TenantSubscription.objects
+            .filter(tenant=tenant, active=True)
+            .order_by("-end_date")
+            .first()
+        )
+
         if not subscription:
             return False
 
-        print("Active:", subscription.active)
-        print("End date:", subscription.end_date)
-
-        if not subscription.active:
-            return False
         if subscription.end_date and subscription.end_date < timezone.now().date():
             return False
 
         return True
-
