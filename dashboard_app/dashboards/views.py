@@ -60,9 +60,6 @@ class UserViewSet(viewsets.ModelViewSet):
 
     @action(detail=False, methods=["post"], url_path="invite")
     def invite(self, request):
-        """
-        Custom endpoint: POST /api/users/invite/
-        """
         tenant = get_current_tenant()
         enforce_subscription_limit(tenant, resource="users")
 
@@ -70,6 +67,19 @@ class UserViewSet(viewsets.ModelViewSet):
         serializer.is_valid(raise_exception=True)
         user = serializer.save(is_active=True)
         TenantUser.objects.get_or_create(user=user, tenant=tenant)
+
+        # send email safely
+        try:
+            send_mail(
+                subject="You're invited!",
+                message=f"Hi {user.first_name}, you've been invited to join {tenant.name}.",
+                from_email=settings.DEFAULT_FROM_EMAIL,
+                recipient_list=[user.email],
+            )
+        except Exception as e:
+            # log but do not fail the request
+            import logging
+            logging.error(f"Failed to send invite email: {e}")
 
         return Response({"message": "User invited successfully"}, status=status.HTTP_201_CREATED)
         
