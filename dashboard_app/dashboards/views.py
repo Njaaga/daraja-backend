@@ -58,6 +58,21 @@ class UserViewSet(viewsets.ModelViewSet):
     serializer_class = UserSerializer
     permission_classes = [IsAuthenticated, IsSuperAdmin]
 
+    @action(detail=False, methods=["post"], url_path="invite")
+    def invite(self, request):
+        """
+        Custom endpoint: POST /api/users/invite/
+        """
+        tenant = get_current_tenant()
+        enforce_subscription_limit(tenant, resource="users")
+
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        user = serializer.save(is_active=True)
+        TenantUser.objects.get_or_create(user=user, tenant=tenant)
+
+        return Response({"message": "User invited successfully"}, status=status.HTTP_201_CREATED)
+        
     # -----------------------------
     # Queryset (active by default)
     # -----------------------------
