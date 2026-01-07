@@ -25,7 +25,6 @@ class TenantMiddleware:
         "/admin",
         "/static",
         "/media",
-        "/stripe/webhook",
         "/api/forgot-password",
         "/api/reset-password",
     )
