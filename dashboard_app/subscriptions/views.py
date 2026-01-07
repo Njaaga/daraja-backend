@@ -129,15 +129,33 @@ logger = logging.getLogger(__name__)
 
 
 
+# views.py
+from django.views.decorators.csrf import csrf_exempt
+from django.http import HttpRequest, HttpResponse
+from django.conf import settings
+import stripe
+import logging
+from datetime import datetime, timezone as dt_timezone
+
+from yourapp.models import Tenant, SubscriptionPlan, TenantSubscription
+
+logger = logging.getLogger(__name__)
+
 @csrf_exempt
-def stripe_webhook(request):
+def stripe_webhook(request: HttpRequest) -> HttpResponse:
     payload = request.body
     sig_header = request.META.get("HTTP_STRIPE_SIGNATURE")
-    endpoint_secret = settings.STRIPE_WEBHOOK_SECRET
+    endpoint_secret = getattr(settings, "STRIPE_WEBHOOK_SECRET", None)
+
+    if not endpoint_secret:
+        logger.error("STRIPE_WEBHOOK_SECRET not set in settings")
+        return HttpResponse(status=500)
 
     try:
         event = stripe.Webhook.construct_event(
-            payload=payload, sig_header=sig_header, secret=endpoint_secret
+            payload=payload,
+            sig_header=sig_header,
+            secret=endpoint_secret
         )
     except ValueError:
         logger.error("Invalid payload")
@@ -168,7 +186,7 @@ def stripe_webhook(request):
 
         plan = SubscriptionPlan.objects.filter(id=plan_id).first() if plan_id else None
         if plan_id and not plan:
-            logger.warning(f"Plan not found for id {plan_id}. Will continue without it.")
+            logger.warning(f"Plan not found for id {plan_id}. Proceeding without plan.")
 
         items = data.get("items", {}).get("data", [])
         if not items:
