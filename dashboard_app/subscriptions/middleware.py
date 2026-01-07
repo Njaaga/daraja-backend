@@ -59,18 +59,6 @@ class SubscriptionEnforcementMiddleware(MiddlewareMixin):
     ]
 
     def process_request(self, request):
-        # --------------------------------------------------
-        # Normalize path ONCE (very important)
-        # --------------------------------------------------
-        path = request.path.rstrip("/")
-
-        # --------------------------------------------------
-        # Always allow exempt paths (Stripe, auth, public)
-        # --------------------------------------------------
-        for prefix in self.EXEMPT_PREFIXES:
-            if path.startswith(prefix.rstrip("/")):
-                return None
-                
         tenant = get_current_tenant()
         if not tenant:
             return None  # no tenant, nothing to enforce
