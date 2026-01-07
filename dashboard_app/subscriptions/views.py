@@ -129,18 +129,6 @@ logger = logging.getLogger(__name__)
 
 
 
-# views.py
-from django.views.decorators.csrf import csrf_exempt
-from django.http import HttpRequest, HttpResponse
-from django.conf import settings
-import stripe
-import logging
-from datetime import datetime, timezone as dt_timezone
-
-from yourapp.models import Tenant, SubscriptionPlan, TenantSubscription
-
-logger = logging.getLogger(__name__)
-
 @csrf_exempt
 def stripe_webhook(request: HttpRequest) -> HttpResponse:
     payload = request.body
