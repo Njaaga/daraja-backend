@@ -50,7 +50,7 @@ class SubscriptionEnforcementMiddleware(MiddlewareMixin):
         "/api/subscription/select-plan/",
         "/api/subscription/create-setup-intent/",
         "/api/subscription/stripe/create-checkout/",
-        "/api/subscription/stripe/webhook/",
+        "/api/subscription/stripe-webhook/",
         "/api/subscription/stripe/confirm/",
         "/api/subscription/list-payment-methods/",
         "/api/subscription/list-invoices/",
