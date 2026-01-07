@@ -131,84 +131,78 @@ logger = logging.getLogger(__name__)
 @csrf_exempt
 def stripe_webhook(request):
     payload = request.body
-    sig_header = request.META.get("HTTP_STRIPE_SIGNATURE")
+    sig = request.META.get("HTTP_STRIPE_SIGNATURE")
 
     try:
         event = stripe.Webhook.construct_event(
-            payload=payload,
-            sig_header=sig_header,
-            secret=settings.STRIPE_WEBHOOK_SECRET,
+            payload, sig, settings.STRIPE_WEBHOOK_SECRET
         )
-    except Exception:
-        logger.exception("Stripe signature verification failed")
+    except Exception as e:
+        logger.exception("Stripe signature error")
+        return HttpResponse(status=400)
+
+    data = event["data"]["object"]
+    event_type = event["type"]
+
+    logger.warning(f"WEBHOOK RECEIVED → {event_type}")
+
+    if event_type not in (
+        "customer.subscription.created",
+        "customer.subscription.updated",
+    ):
         return HttpResponse(status=200)
 
-    event_type = event.get("type")
-    data = event.get("data", {}).get("object", {})
+    # -------------------------
+    # REQUIRED FIELDS
+    # -------------------------
+    sub_id = data["id"]
+    metadata = data.get("metadata", {})
+    tenant_slug = metadata.get("tenant_slug")
+    plan_id = metadata.get("plan_id")
 
-    logger.info(f"Stripe webhook received: {event_type}")
+    if not tenant_slug:
+        logger.error("❌ tenant_slug missing")
+        return HttpResponse(status=400)
 
-    if event_type in ("customer.subscription.created", "customer.subscription.updated"):
-        try:
-            stripe_sub_id = data["id"]
-            status = data.get("status")
+    tenant = Tenant.objects.filter(subdomain__iexact=tenant_slug).first()
+    if not tenant:
+        logger.error(f"❌ Tenant not found: {tenant_slug}")
+        return HttpResponse(status=400)
 
-            items = data.get("items", {}).get("data", [])
-            period_start = items[0]["current_period_start"] if items else None
-            period_end = items[0]["current_period_end"] if items else None
+    plan = SubscriptionPlan.objects.filter(id=plan_id).first()
+    if not plan:
+        logger.error(f"❌ Plan not found: {plan_id}")
+        return HttpResponse(status=400)
 
-            # ✅ FIX: DATE, not datetime
-            start_date = (
-                datetime.fromtimestamp(period_start, tz=dt_timezone.utc).date()
-                if period_start else None
-            )
-            end_date = (
-                datetime.fromtimestamp(period_end, tz=dt_timezone.utc).date()
-                if period_end else None
-            )
+    item = data["items"]["data"][0]
+    start = datetime.fromtimestamp(item["current_period_start"], dt_timezone.utc).date()
+    end = datetime.fromtimestamp(item["current_period_end"], dt_timezone.utc).date()
 
-            metadata = data.get("metadata", {})
-            tenant_slug = metadata.get("tenant_slug")
-            plan_id = metadata.get("plan_id")
+    active = data["status"] == "active" and not data.get("cancel_at_period_end", False)
 
-            if not tenant_slug:
-                logger.error("Missing tenant_slug in metadata")
-                return HttpResponse(status=200)
+    # -------------------------
+    # HARD SAVE (NO SILENCE)
+    # -------------------------
+    sub, created = TenantSubscription.objects.update_or_create(
+        stripe_subscription_id=sub_id,
+        defaults={
+            "tenant": tenant,
+            "plan": plan,
+            "start_date": start,
+            "end_date": end,
+            "active": active,
+            "auto_renew": not data.get("cancel_at_period_end", False),
+            "max_api_rows": plan.max_api_rows,
+            "max_dashboards": plan.max_dashboards,
+            "max_datasets": plan.max_datasets,
+            "max_users": plan.max_users,
+            "max_groups": plan.max_groups,
+        },
+    )
 
-            tenant = Tenant.objects.filter(subdomain__iexact=tenant_slug).first()
-            if not tenant:
-                logger.error(f"Tenant not found: {tenant_slug}")
-                return HttpResponse(status=200)
-
-            plan = SubscriptionPlan.objects.filter(id=plan_id).first() if plan_id else None
-
-            cancel_at_period_end = data.get("cancel_at_period_end", False)
-            is_active = status == "active" and not cancel_at_period_end
-
-            sub, created = TenantSubscription.objects.update_or_create(
-                stripe_subscription_id=stripe_sub_id,
-                defaults={
-                    "tenant": tenant,
-                    "plan": plan,
-                    "start_date": start_date,
-                    "end_date": end_date,
-                    "active": is_active,
-                    "auto_renew": not cancel_at_period_end,
-                    "max_api_rows": plan.max_api_rows if plan else 0,
-                    "max_dashboards": plan.max_dashboards if plan else 0,
-                    "max_datasets": plan.max_datasets if plan else 0,
-                    "max_users": plan.max_users if plan else 0,
-                    "max_groups": plan.max_groups if plan else 0,
-                },
-            )
-
-            logger.info(
-                f"Subscription {'created' if created else 'updated'} | "
-                f"tenant={tenant_slug} | active={sub.active}"
-            )
-
-        except Exception:
-            logger.exception("Failed to process subscription webhook")
+    logger.warning(
+        f"✅ SUBSCRIPTION SAVED | tenant={tenant_slug} | active={active}"
+    )
 
     return HttpResponse(status=200)
 
