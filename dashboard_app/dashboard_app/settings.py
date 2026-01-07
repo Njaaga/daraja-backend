@@ -19,6 +19,7 @@ DEBUG = False
 ALLOWED_HOSTS = [
     "darajatechnologies.ca",
     "www.darajatechnologies.ca",
+    "api.darajatechnologies.ca",
     "18.220.106.255",
 ]
 
