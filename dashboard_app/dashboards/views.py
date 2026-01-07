@@ -56,7 +56,7 @@ from datetime import timedelta
 # ---------------------------
 class UserViewSet(viewsets.ModelViewSet):
     serializer_class = UserSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, IsSuperAdmin]
 
     @action(detail=False, methods=["post"], url_path="invite")
     def invite(self, request):
