@@ -130,108 +130,63 @@ logger = logging.getLogger(__name__)
 
 @csrf_exempt
 def stripe_webhook(request):
-    """
-    Stripe webhook handler.
-    - Always ACKs Stripe with 200
-    - Never crashes
-    - Safely writes subscription to DB
-    """
-
     payload = request.body
     sig_header = request.META.get("HTTP_STRIPE_SIGNATURE")
 
-    # --------------------------------------------------
-    # 1. Verify Stripe signature
-    # --------------------------------------------------
     try:
         event = stripe.Webhook.construct_event(
             payload=payload,
             sig_header=sig_header,
             secret=settings.STRIPE_WEBHOOK_SECRET,
         )
-    except Exception as e:
-        logger.error("Stripe webhook signature verification failed", exc_info=True)
-        return HttpResponse(status=200)  # NEVER block Stripe
+    except Exception:
+        logger.exception("Stripe signature verification failed")
+        return HttpResponse(status=200)
 
     event_type = event.get("type")
-    data_object = event.get("data", {}).get("object", {})
+    data = event.get("data", {}).get("object", {})
 
     logger.info(f"Stripe webhook received: {event_type}")
 
-    # --------------------------------------------------
-    # 2. Handle subscription create / update
-    # --------------------------------------------------
-    if event_type in (
-        "customer.subscription.created",
-        "customer.subscription.updated",
-    ):
+    if event_type in ("customer.subscription.created", "customer.subscription.updated"):
         try:
-            stripe_subscription_id = data_object.get("id")
-            status = data_object.get("status")
+            stripe_sub_id = data["id"]
+            status = data.get("status")
 
-            # ----------------------------
-            # Extract dates safely
-            # ----------------------------
-            items = data_object.get("items", {}).get("data", [])
-            period_start = None
-            period_end = None
+            items = data.get("items", {}).get("data", [])
+            period_start = items[0]["current_period_start"] if items else None
+            period_end = items[0]["current_period_end"] if items else None
 
-            if items:
-                period_start = items[0].get("current_period_start")
-                period_end = items[0].get("current_period_end")
-
+            # ✅ FIX: DATE, not datetime
             start_date = (
-                datetime.fromtimestamp(period_start, tz=dt_timezone.utc)
-                if period_start
-                else None
+                datetime.fromtimestamp(period_start, tz=dt_timezone.utc).date()
+                if period_start else None
             )
             end_date = (
-                datetime.fromtimestamp(period_end, tz=dt_timezone.utc)
-                if period_end
-                else None
+                datetime.fromtimestamp(period_end, tz=dt_timezone.utc).date()
+                if period_end else None
             )
 
-            # ----------------------------
-            # Resolve tenant
-            # ----------------------------
-            metadata = data_object.get("metadata", {})
+            metadata = data.get("metadata", {})
             tenant_slug = metadata.get("tenant_slug")
             plan_id = metadata.get("plan_id")
 
             if not tenant_slug:
-                logger.error("Webhook missing tenant_slug metadata")
+                logger.error("Missing tenant_slug in metadata")
                 return HttpResponse(status=200)
 
-            tenant = Tenant.objects.filter(
-                subdomain__iexact=tenant_slug
-            ).first()
-
+            tenant = Tenant.objects.filter(subdomain__iexact=tenant_slug).first()
             if not tenant:
                 logger.error(f"Tenant not found: {tenant_slug}")
                 return HttpResponse(status=200)
 
-            # ----------------------------
-            # Resolve plan (optional but safe)
-            # ----------------------------
-            plan = None
-            if plan_id:
-                plan = SubscriptionPlan.objects.filter(id=plan_id).first()
-                if not plan:
-                    logger.error(
-                        f"SubscriptionPlan id={plan_id} not found (tenant={tenant_slug})"
-                    )
+            plan = SubscriptionPlan.objects.filter(id=plan_id).first() if plan_id else None
 
-            # ----------------------------
-            # Determine flags
-            # ----------------------------
-            cancel_at_period_end = data_object.get("cancel_at_period_end", False)
+            cancel_at_period_end = data.get("cancel_at_period_end", False)
             is_active = status == "active" and not cancel_at_period_end
 
-            # ----------------------------
-            # Idempotent DB write
-            # ----------------------------
             sub, created = TenantSubscription.objects.update_or_create(
-                stripe_subscription_id=stripe_subscription_id,
+                stripe_subscription_id=stripe_sub_id,
                 defaults={
                     "tenant": tenant,
                     "plan": plan,
@@ -239,8 +194,6 @@ def stripe_webhook(request):
                     "end_date": end_date,
                     "active": is_active,
                     "auto_renew": not cancel_at_period_end,
-
-                    # Safe quota defaults
                     "max_api_rows": plan.max_api_rows if plan else 0,
                     "max_dashboards": plan.max_dashboards if plan else 0,
                     "max_datasets": plan.max_datasets if plan else 0,
@@ -251,38 +204,12 @@ def stripe_webhook(request):
 
             logger.info(
                 f"Subscription {'created' if created else 'updated'} | "
-                f"tenant={tenant_slug} | "
-                f"sub={stripe_subscription_id} | "
-                f"active={sub.active}"
+                f"tenant={tenant_slug} | active={sub.active}"
             )
 
         except Exception:
-            logger.error("Error processing subscription webhook", exc_info=True)
+            logger.exception("Failed to process subscription webhook")
 
-    # --------------------------------------------------
-    # 3. Handle invoice paid (backup activation)
-    # --------------------------------------------------
-    elif event_type == "invoice.paid":
-        try:
-            stripe_subscription_id = data_object.get("subscription")
-            if not stripe_subscription_id:
-                return HttpResponse(status=200)
-
-            sub = TenantSubscription.objects.filter(
-                stripe_subscription_id=stripe_subscription_id
-            ).first()
-
-            if sub:
-                sub.active = True
-                sub.save(update_fields=["active"])
-                logger.info(f"Invoice paid → subscription activated {stripe_subscription_id}")
-
-        except Exception:
-            logger.error("Error processing invoice.paid webhook", exc_info=True)
-
-    # --------------------------------------------------
-    # 4. Always ACK Stripe
-    # --------------------------------------------------
     return HttpResponse(status=200)
 
 
