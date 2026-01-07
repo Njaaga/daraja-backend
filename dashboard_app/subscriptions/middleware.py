@@ -7,8 +7,6 @@ from django.utils.deprecation import MiddlewareMixin
 
 from tenants.middleware import get_current_tenant
 from subscriptions.models import TenantSubscription
-from .utils.subscription_limits import RESOURCE_MAP
-
 from dashboards.models import ApiDataSource, Dataset, Dashboard, Group
 from tenants.models import TenantUser
 
@@ -41,21 +39,15 @@ class SubscriptionEnforcementMiddleware(MiddlewareMixin):
     expiration, and plan-based quotas.
     """
 
-    # Paths that MUST NEVER be blocked (Stripe, auth, public)
     EXEMPT_PREFIXES = [
         "/admin",
         "/static",
         "/media",
-
         "/api/tenants/login",
         "/api/tenants/signup",
         "/api/tenants/verify-email",
         "/api/logout",
-
-        # Stripe (CRITICAL)
         "/api/subscription/stripe-webhook",
-
-        # Subscription setup / billing
         "/api/subscription/plans",
         "/api/subscription/status",
         "/api/subscription/activate",
@@ -67,25 +59,18 @@ class SubscriptionEnforcementMiddleware(MiddlewareMixin):
     ]
 
     def process_request(self, request):
-        # --------------------------------------------------
-        # Normalize path ONCE
-        # --------------------------------------------------
         path = request.path.rstrip("/")
 
-        # --------------------------------------------------
-        # Always allow exempt paths
-        # --------------------------------------------------
+        # Allow exempt paths
         for prefix in self.EXEMPT_PREFIXES:
             if path.startswith(prefix.rstrip("/")):
                 return None
 
         tenant = get_current_tenant()
         if not tenant:
-            return None  # no tenant, nothing to enforce
+            return None  # No tenant, nothing to enforce
 
-        # --------------------------------------------------
         # Get latest active subscription
-        # --------------------------------------------------
         sub = (
             TenantSubscription.objects
             .filter(tenant=tenant, active=True)
@@ -96,38 +81,40 @@ class SubscriptionEnforcementMiddleware(MiddlewareMixin):
         if not sub:
             return self._block(request, "NO_ACTIVE_SUBSCRIPTION")
 
-        # --------------------------------------------------
         # Expiration check
-        # --------------------------------------------------
         if sub.end_date and sub.end_date < timezone.now().date():
             return self._block(request, "SUBSCRIPTION_EXPIRED")
 
-        # --------------------------------------------------
+        # Get plan limits directly from DB
+        plan = sub.plan
+        limits = {
+            "api_sources": plan.max_api_rows if plan else 0,
+            "datasets": plan.max_datasets if plan else 0,
+            "dashboards": plan.max_dashboards if plan else 0,
+            "groups": plan.max_groups if plan else 0,
+            "users": plan.max_users if plan else 0,
+        }
+
         # Enforce plan quotas (POST only)
-        # --------------------------------------------------
-        plan_name = sub.plan.name if sub.plan else None
-        limits = RESOURCE_MAP.get(plan_name, {})
-
         if request.method == "POST":
-
             if path.startswith("/api/api-sources"):
-                if ApiDataSource.objects.filter(tenant=tenant).count() >= limits.get("api_sources", 0):
+                if ApiDataSource.objects.filter(tenant=tenant).count() >= limits["api_sources"]:
                     return self._block(request, "API_SOURCES_LIMIT_REACHED")
 
             if path.startswith("/api/datasets"):
-                if Dataset.objects.filter(tenant=tenant).count() >= limits.get("datasets", 0):
+                if Dataset.objects.filter(tenant=tenant).count() >= limits["datasets"]:
                     return self._block(request, "DATASETS_LIMIT_REACHED")
 
             if path.startswith("/api/dashboards"):
-                if Dashboard.objects.filter(tenant=tenant).count() >= limits.get("dashboards", 0):
+                if Dashboard.objects.filter(tenant=tenant).count() >= limits["dashboards"]:
                     return self._block(request, "DASHBOARDS_LIMIT_REACHED")
 
             if path.startswith("/api/groups"):
-                if Group.objects.filter(tenant=tenant).count() >= limits.get("groups", 0):
+                if Group.objects.filter(tenant=tenant).count() >= limits["groups"]:
                     return self._block(request, "GROUPS_LIMIT_REACHED")
 
             if path.startswith("/api/users/invite"):
-                if TenantUser.objects.filter(tenant=tenant).count() >= limits.get("users", 0):
+                if TenantUser.objects.filter(tenant=tenant).count() >= limits["users"]:
                     return self._block(request, "USERS_LIMIT_REACHED")
 
         # Attach subscription to request for easy access in views
