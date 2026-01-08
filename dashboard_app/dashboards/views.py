@@ -9,6 +9,10 @@ from rest_framework import viewsets, status
 from rest_framework.permissions import IsAdminUser, AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.decorators import action, api_view, permission_classes
+from django.contrib.auth.tokens import default_token_generator
+from django.utils.http import urlsafe_base64_encode
+from django.utils.encoding import force_bytes
+
 from .models import (
     Dashboard, 
     Group, 
@@ -78,46 +82,33 @@ class UserViewSet(viewsets.ModelViewSet):
     # INVITE USER (IMPORTANT)
     # POST /api/users/invite/
     # -----------------------------
-    @action(detail=False, methods=["post"], url_path="invite")
-    def invite(self, request):
-        tenant = get_current_tenant()
-        if not tenant:
-            return Response(
-                {"detail": "Tenant not detected"},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+@action(detail=False, methods=["post"], url_path="invite")
+def invite(self, request):
+    tenant = get_current_tenant()
+    enforce_subscription_limit(tenant, resource="users")
 
-        # 🚨 Subscription limit
-        enforce_subscription_limit(tenant, resource="users")
+    serializer = self.get_serializer(data=request.data)
+    serializer.is_valid(raise_exception=True)
 
-        serializer = self.get_serializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
+    user = serializer.save(is_active=True)
+    TenantUser.objects.get_or_create(user=user, tenant=tenant)
 
-        user = serializer.save(is_active=True)
-        TenantUser.objects.get_or_create(user=user, tenant=tenant)
+    # 🔑 Generate UID + token
+    uid = urlsafe_base64_encode(force_bytes(user.pk))
+    token = default_token_generator.make_token(user)
 
-        # -----------------------------
-        # OPTIONAL EMAIL (SAFE)
-        # -----------------------------
-        try:
-            uid = urlsafe_base64_encode(force_bytes(user.pk))
-            setup_link = f"{settings.FRONTEND_URL}/set-password?uid={uid}"
+    invite_link = (
+        f"https://daraja-frontend-dl85.vercel.app/set-password"
+        f"?uid={uid}&token={token}"
+    )
 
-            send_mail(
-                subject="You’ve been invited",
-                message=f"You’ve been invited. Set your password here:\n{setup_link}",
-                from_email=settings.DEFAULT_FROM_EMAIL,
-                recipient_list=[user.email],
-                fail_silently=True,  # 🔑 THIS PREVENTS PROD FAILURES
-            )
-        except Exception as e:
-            # Email failure should NEVER block user creation
-            print("Invite email failed:", str(e))
+    # TODO: send email here
+    print("INVITE LINK:", invite_link)
 
-        return Response(
-            {"message": "User invited successfully"},
-            status=status.HTTP_201_CREATED,
-        )
+    return Response(
+        {"message": "User invited successfully"},
+        status=status.HTTP_201_CREATED
+    )
 
     # -----------------------------
     # Create (non-invite)
