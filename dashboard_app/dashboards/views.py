@@ -74,6 +74,45 @@ class UserViewSet(viewsets.ModelViewSet):
 
         return qs.order_by("first_name", "last_name")
 
+    @action(detail=False, methods=["post"])
+    def invite(self, request):
+        first_name = request.data.get("first_name", "")
+        last_name = request.data.get("last_name", "")
+        email = request.data.get("email")
+
+        if not email:
+            return Response({"error": "Email required"}, status=400)
+
+        tenant_name = getattr(request.tenant, "schema_name", None)
+        if not tenant_name:
+            return Response({"error": "Tenant context missing"}, status=400)
+
+        with schema_context(tenant_name):
+            user, created = User.objects.get_or_create(
+                email=email,
+                defaults={
+                    "username": email,
+                    "first_name": first_name,
+                    "last_name": last_name,
+                    "is_active": True,
+                },
+            )
+
+            # Generate UID & token
+            uid = urlsafe_base64_encode(force_bytes(user.pk))
+            token = default_token_generator.make_token(user)
+            link = f"{settings.FRONTEND_URL}/set-password?uid={uid}&token={token}"
+
+            # Send email
+            send_mail(
+                subject="Set your password",
+                message=f"Hello {user.first_name},\n\nSet your password by clicking this link:\n{link}",
+                from_email=settings.DEFAULT_FROM_EMAIL,
+                recipient_list=[email],
+            )
+
+        return Response({"message": "Invitation sent", "status": "pending", "uid": uid, "token": token})
+        
     # -----------------------------
     # Create user (limit enforced)
     # -----------------------------
