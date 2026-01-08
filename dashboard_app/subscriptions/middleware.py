@@ -60,6 +60,7 @@ class SubscriptionEnforcementMiddleware(MiddlewareMixin):
         "/api/dashboards/",
         "/api/groups/",
         "/api/users/invite",
+        "/api/set-password/",
     ]
 
     def process_request(self, request):
