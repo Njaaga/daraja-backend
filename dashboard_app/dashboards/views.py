@@ -90,25 +90,52 @@ def invite(self, request):
     serializer = self.get_serializer(data=request.data)
     serializer.is_valid(raise_exception=True)
 
-    user = serializer.save(is_active=True)
+    # 1️⃣ Create inactive user
+    user = serializer.save(is_active=False)
     TenantUser.objects.get_or_create(user=user, tenant=tenant)
 
-    # 🔑 Generate UID + token
+    # 2️⃣ Generate token
     uid = urlsafe_base64_encode(force_bytes(user.pk))
     token = default_token_generator.make_token(user)
 
-    invite_link = (
-        f"https://daraja-frontend-dl85.vercel.app/set-password"
+    invite_url = (
+        f"{settings.FRONTEND_URL}/set-password"
         f"?uid={uid}&token={token}"
     )
 
-    # TODO: send email here
-    print("INVITE LINK:", invite_link)
+    # 3️⃣ SEND EMAIL (SAFE)
+    try:
+        send_mail(
+            subject="You're invited to Daraja",
+            message=f"""
+Hello {user.first_name},
+
+You have been invited to Daraja.
+
+Set your password using the link below:
+{invite_url}
+
+This link expires after use.
+""",
+            from_email=settings.DEFAULT_FROM_EMAIL,
+            recipient_list=[user.email],
+            fail_silently=False,  # IMPORTANT
+        )
+    except Exception as e:
+        logger.exception("Invite email failed")
+        return Response(
+            {
+                "error": "User created but email failed",
+                "details": str(e),
+            },
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
 
     return Response(
-        {"message": "User invited successfully"},
-        status=status.HTTP_201_CREATED
+        {"message": "Invite sent successfully"},
+        status=status.HTTP_201_CREATED,
     )
+
 
     # -----------------------------
     # Create (non-invite)
