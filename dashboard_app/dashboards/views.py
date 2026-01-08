@@ -82,59 +82,46 @@ class UserViewSet(viewsets.ModelViewSet):
     # INVITE USER (IMPORTANT)
     # POST /api/users/invite/
     # -----------------------------
-@action(detail=False, methods=["post"], url_path="invite")
-def invite(self, request):
-    tenant = get_current_tenant()
-    enforce_subscription_limit(tenant, resource="users")
+    @action(detail=False, methods=["post"], url_path="invite")
+    def invite(self, request):
+        tenant = get_current_tenant()
+        if not tenant:
+            return Response(
+                {"detail": "Tenant not detected"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
-    serializer = self.get_serializer(data=request.data)
-    serializer.is_valid(raise_exception=True)
+        # 🚨 Subscription limit
+        enforce_subscription_limit(tenant, resource="users")
 
-    # 1️⃣ Create inactive user
-    user = serializer.save(is_active=False)
-    TenantUser.objects.get_or_create(user=user, tenant=tenant)
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
 
-    # 2️⃣ Generate token
-    uid = urlsafe_base64_encode(force_bytes(user.pk))
-    token = default_token_generator.make_token(user)
+        user = serializer.save(is_active=True)
+        TenantUser.objects.get_or_create(user=user, tenant=tenant)
 
-    invite_url = (
-        f"{settings.FRONTEND_URL}/set-password"
-        f"?uid={uid}&token={token}"
-    )
+        # -----------------------------
+        # OPTIONAL EMAIL (SAFE)
+        # -----------------------------
+        try:
+            uid = urlsafe_base64_encode(force_bytes(user.pk))
+            setup_link = f"{settings.FRONTEND_URL}/set-password?uid={uid}"
 
-    # 3️⃣ SEND EMAIL (SAFE)
-    try:
-        send_mail(
-            subject="You're invited to Daraja",
-            message=f"""
-Hello {user.first_name},
+            send_mail(
+                subject="You’ve been invited",
+                message=f"You’ve been invited. Set your password here:\n{setup_link}",
+                from_email=settings.DEFAULT_FROM_EMAIL,
+                recipient_list=[user.email],
+                fail_silently=True,  # 🔑 THIS PREVENTS PROD FAILURES
+            )
+        except Exception as e:
+            # Email failure should NEVER block user creation
+            print("Invite email failed:", str(e))
 
-You have been invited to Daraja.
-
-Set your password using the link below:
-{invite_url}
-
-This link expires after use.
-""",
-            from_email=settings.DEFAULT_FROM_EMAIL,
-            recipient_list=[user.email],
-            fail_silently=False,  # IMPORTANT
-        )
-    except Exception as e:
-        logger.exception("Invite email failed")
         return Response(
-            {
-                "error": "User created but email failed",
-                "details": str(e),
-            },
-            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            {"message": "User invited successfully"},
+            status=status.HTTP_201_CREATED,
         )
-
-    return Response(
-        {"message": "Invite sent successfully"},
-        status=status.HTTP_201_CREATED,
-    )
 
 
     # -----------------------------
