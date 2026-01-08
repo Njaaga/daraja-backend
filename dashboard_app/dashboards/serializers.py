@@ -45,32 +45,16 @@ class TenantSignupSerializer(serializers.Serializer):
 # ----------------------------------------------------
 # USER SERIALIZER
 # ----------------------------------------------------
-class UserSerializer(serializers.ModelSerializer):
+class UserInviteSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
-        fields = [
-            "id",
-            "username",
-            "first_name",
-            "last_name",
-            "email",
-            "is_active",
-            "is_superuser",
-        ]
-        extra_kwargs = {
-            "username": {"required": False},
-        }
+        fields = ["email", "first_name", "last_name", "is_staff", "is_superuser"]
 
     def create(self, validated_data):
-        # Ensure username exists
-        if not validated_data.get("username"):
-            validated_data["username"] = validated_data["email"]
-
+        # Auto-fill username
+        validated_data["username"] = validated_data["email"]
         user = User(**validated_data)
-
-        # 🔑 REQUIRED: invite users should not have a password yet
-        user.set_unusable_password()
-
+        user.set_unusable_password()  # invite only
         user.save()
         return user
 
