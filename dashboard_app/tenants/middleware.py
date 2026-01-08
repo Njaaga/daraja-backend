@@ -23,6 +23,7 @@ class TenantMiddleware:
         "/media",
         "/api/forgot-password",
         "/api/reset-password",
+        "/api/users/invite",
     )
 
     def __init__(self, get_response):
