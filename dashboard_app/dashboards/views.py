@@ -58,30 +58,44 @@ class UserViewSet(viewsets.ModelViewSet):
     serializer_class = UserSerializer
     permission_classes = [IsAuthenticated, IsSuperAdmin]
 
-    @action(detail=False, methods=["post"], url_path="invite")
+    @action(detail=False, methods=["post"])
     def invite(self, request):
-        tenant = get_current_tenant()
-        enforce_subscription_limit(tenant, resource="users")
+        first_name = request.data.get("first_name", "")
+        last_name = request.data.get("last_name", "")
+        email = request.data.get("email")
 
-        serializer = self.get_serializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        user = serializer.save(is_active=True)
-        TenantUser.objects.get_or_create(user=user, tenant=tenant)
+        if not email:
+            return Response({"error": "Email required"}, status=400)
 
-        # send email safely
-        try:
-            send_mail(
-                subject="You're invited!",
-                message=f"Hi {user.first_name}, you've been invited to join {tenant.name}.",
-                from_email=settings.DEFAULT_FROM_EMAIL,
-                recipient_list=[user.email],
+        tenant_name = getattr(request.tenant, "schema_name", None)
+        if not tenant_name:
+            return Response({"error": "Tenant context missing"}, status=400)
+
+        with schema_context(tenant_name):
+            user, created = User.objects.get_or_create(
+                email=email,
+                defaults={
+                    "username": email,
+                    "first_name": first_name,
+                    "last_name": last_name,
+                    "is_active": True,
+                },
             )
-        except Exception as e:
-            # log but do not fail the request
-            import logging
-            logging.error(f"Failed to send invite email: {e}")
 
-        return Response({"message": "User invited successfully"}, status=status.HTTP_201_CREATED)
+            # Generate UID & token
+            uid = urlsafe_base64_encode(force_bytes(user.pk))
+            token = default_token_generator.make_token(user)
+            link = f"{settings.FRONTEND_URL}/set-password?uid={uid}&token={token}"
+
+            # Send email
+            send_mail(
+                subject="Set your password",
+                message=f"Hello {user.first_name},\n\nSet your password by clicking this link:\n{link}",
+                from_email=settings.DEFAULT_FROM_EMAIL,
+                recipient_list=[email],
+            )
+
+        return Response({"message": "Invitation sent", "status": "pending", "uid": uid, "token": token})
         
     # -----------------------------
     # Queryset (active by default)
