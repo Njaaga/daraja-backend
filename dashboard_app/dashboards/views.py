@@ -82,77 +82,46 @@ class UserViewSet(viewsets.ModelViewSet):
     # INVITE USER (IMPORTANT)
     # POST /api/users/invite/
     # -----------------------------
-@api_view(["POST"])
-@permission_classes([IsAuthenticated])
-def invite_user(request, tenant_id):
-    # -------------------- Extract Data --------------------
-    email = request.data.get("email")
-    is_staff = request.data.get("is_staff", False)
+    @action(detail=False, methods=["post"], url_path="invite")
+    def invite(self, request):
+        tenant = get_current_tenant()
+        if not tenant:
+            return Response(
+                {"detail": "Tenant not detected"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
-    # -------------------- Validation --------------------
-    if not email:
-        return Response({"error": "Email is required"}, status=400)
+        # 🚨 Subscription limit
+        enforce_subscription_limit(tenant, resource="users")
 
-    try:
-        tenant = Tenant.objects.get(id=tenant_id)
-    except Tenant.DoesNotExist:
-        return Response({"error": "Tenant not found"}, status=404)
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
 
-    if User.objects.filter(email=email).exists():
-        return Response({"error": "Email already registered"}, status=400)
+        user = serializer.save(is_active=True)
+        TenantUser.objects.get_or_create(user=user, tenant=tenant)
 
-    # -------------------- Create User --------------------
-    user = User.objects.create_user(
-        username=email,
-        email=email,
-        password=User.objects.make_random_password(),
-        is_active=False,
-        is_staff=is_staff,
-        is_superuser=False,
-    )
+        # -----------------------------
+        # OPTIONAL EMAIL (SAFE)
+        # -----------------------------
+        try:
+            uid = urlsafe_base64_encode(force_bytes(user.pk))
+            setup_link = f"{settings.FRONTEND_URL}/set-password?uid={uid}"
 
-    # -------------------- Link User to Tenant --------------------
-    TenantUser.objects.create(
-        tenant=tenant,
-        user=user,
-        stripe_customer_id=tenant.stripe_customer_id,
-        is_superadmin=False,
-    )
+            send_mail(
+                subject="You’ve been invited",
+                message=f"You’ve been invited. Set your password here:\n{setup_link}",
+                from_email=settings.DEFAULT_FROM_EMAIL,
+                recipient_list=[user.email],
+                fail_silently=True,  # 🔑 THIS PREVENTS PROD FAILURES
+            )
+        except Exception as e:
+            # Email failure should NEVER block user creation
+            print("Invite email failed:", str(e))
 
-    # -------------------- Generate Invite Email --------------------
-    uid = urlsafe_base64_encode(force_bytes(user.pk))
-    token = default_token_generator.make_token(user)
-
-    invite_url = build_frontend_url(
-        request,
-        f"/accept-invite?uid={uid}&token={token}",
-    )
-
-    send_mail(
-        subject=f"You're invited to join {tenant.name}",
-        message=(
-            f"Hello!\n\n"
-            f"You have been invited to join {tenant.name}.\n\n"
-            f"Click the link below to accept the invitation and set your password:\n\n"
-            f"{invite_url}\n\n"
-            f"If you did not expect this invite, please ignore this email."
-        ),
-        from_email=settings.DEFAULT_FROM_EMAIL,
-        recipient_list=[email],
-    )
-
-    # -------------------- Response --------------------
-    return Response(
-        {
-            "message": f"Invitation sent to {email}.",
-            "tenant": {
-                "id": tenant.id,
-                "name": tenant.name,
-                "subdomain": tenant.subdomain,
-            },
-        },
-        status=201,
-    )
+        return Response(
+            {"message": "User invited successfully"},
+            status=status.HTTP_201_CREATED,
+        )
 
     # -----------------------------
     # Create (non-invite)
