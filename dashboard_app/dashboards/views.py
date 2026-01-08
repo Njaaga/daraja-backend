@@ -74,44 +74,46 @@ class UserViewSet(viewsets.ModelViewSet):
 
         return qs.order_by("first_name", "last_name")
 
-    @action(detail=False, methods=["post"])
+    @action(detail=False, methods=["post"], url_path="invite")
     def invite(self, request):
-        first_name = request.data.get("first_name", "")
-        last_name = request.data.get("last_name", "")
-        email = request.data.get("email")
-
-        if not email:
-            return Response({"error": "Email required"}, status=400)
-
-        tenant_name = getattr(request.tenant, "schema_name", None)
-        if not tenant_name:
-            return Response({"error": "Tenant context missing"}, status=400)
-
-        with schema_context(tenant_name):
-            user, created = User.objects.get_or_create(
-                email=email,
-                defaults={
-                    "username": email,
-                    "first_name": first_name,
-                    "last_name": last_name,
-                    "is_active": True,
-                },
+        tenant = get_current_tenant()
+        if not tenant:
+            return Response(
+                {"detail": "Tenant not detected"},
+                status=status.HTTP_400_BAD_REQUEST,
             )
 
-            # Generate UID & token
+        # 🚨 Subscription limit
+        enforce_subscription_limit(tenant, resource="users")
+
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        user = serializer.save(is_active=True)
+        TenantUser.objects.get_or_create(user=user, tenant=tenant)
+
+        # -----------------------------
+        # OPTIONAL EMAIL (SAFE)
+        # -----------------------------
+        try:
             uid = urlsafe_base64_encode(force_bytes(user.pk))
-            token = default_token_generator.make_token(user)
-            link = f"{settings.FRONTEND_URL}/set-password?uid={uid}&token={token}"
+            setup_link = f"{settings.FRONTEND_URL}/set-password?uid={uid}"
 
-            # Send email
             send_mail(
-                subject="Set your password",
-                message=f"Hello {user.first_name},\n\nSet your password by clicking this link:\n{link}",
+                subject="You’ve been invited",
+                message=f"You’ve been invited. Set your password here:\n{setup_link}",
                 from_email=settings.DEFAULT_FROM_EMAIL,
-                recipient_list=[email],
+                recipient_list=[user.email],
+                fail_silently=True,  # 🔑 THIS PREVENTS PROD FAILURES
             )
+        except Exception as e:
+            # Email failure should NEVER block user creation
+            print("Invite email failed:", str(e))
 
-        return Response({"message": "Invitation sent", "status": "pending", "uid": uid, "token": token})
+        return Response(
+            {"message": "User invited successfully"},
+            status=status.HTTP_201_CREATED,
+        )
         
     # -----------------------------
     # Create user (limit enforced)
