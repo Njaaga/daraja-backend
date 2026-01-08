@@ -12,7 +12,6 @@ from .views import (
     CurrentUserView,
     ForgotPasswordView,
     ResetPasswordView,
-    invite_user
 )
 
 from django.contrib.auth import views as auth_views
@@ -32,8 +31,6 @@ urlpatterns = [
 
     # all secured authenticated API endpoints
     path("", include(router.urls)),
-
-    path('api/users/invite/<int:tenant_id>/', invite_user, name='invite_user'),
 
     path("forgot-password/", ForgotPasswordView.as_view(), name="forgot-password"),
 
