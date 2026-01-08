@@ -51,12 +51,24 @@ class UserSerializer(serializers.ModelSerializer):
         fields = ["email", "first_name", "last_name", "is_staff", "is_superuser"]
 
     def create(self, validated_data):
-        # Auto-fill username
-        validated_data["username"] = validated_data["email"]
-        user = User(**validated_data)
-        user.set_unusable_password()  # invite only
-        user.save()
+        email = validated_data["email"]
+
+        user, created = User.objects.get_or_create(
+            email=email,
+            defaults={
+                "username": email,
+                "first_name": validated_data.get("first_name", ""),
+                "last_name": validated_data.get("last_name", ""),
+                "is_active": True,
+            },
+        )
+
+        if created:
+            user.set_unusable_password()
+            user.save()
+
         return user
+
 
 
 
