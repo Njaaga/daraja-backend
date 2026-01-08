@@ -9,10 +9,6 @@ from rest_framework import viewsets, status
 from rest_framework.permissions import IsAdminUser, AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.decorators import action, api_view, permission_classes
-from django.contrib.auth.tokens import default_token_generator
-from django.utils.http import urlsafe_base64_encode
-from django.utils.encoding import force_bytes
-
 from .models import (
     Dashboard, 
     Group, 
@@ -63,7 +59,7 @@ class UserViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated, IsSuperAdmin]
 
     # -----------------------------
-    # Queryset (tenant scoped)
+    # Queryset (active by default)
     # -----------------------------
     def get_queryset(self):
         tenant = get_current_tenant()
@@ -79,50 +75,7 @@ class UserViewSet(viewsets.ModelViewSet):
         return qs.order_by("first_name", "last_name")
 
     # -----------------------------
-    # INVITE USER (IMPORTANT)
-    # POST /api/users/invite/
-    # -----------------------------
-    @action(detail=False, methods=["post"])
-    def invite(self, request):
-        first_name = request.data.get("first_name", "")
-        last_name = request.data.get("last_name", "")
-        email = request.data.get("email")
-
-        if not email:
-            return Response({"error": "Email required"}, status=400)
-
-        tenant_name = getattr(request.tenant, "schema_name", None)
-        if not tenant_name:
-            return Response({"error": "Tenant context missing"}, status=400)
-
-        with schema_context(tenant_name):
-            user, created = User.objects.get_or_create(
-                email=email,
-                defaults={
-                    "username": email,
-                    "first_name": first_name,
-                    "last_name": last_name,
-                    "is_active": True,
-                },
-            )
-
-            # Generate UID & token
-            uid = urlsafe_base64_encode(force_bytes(user.pk))
-            token = default_token_generator.make_token(user)
-            link = f"{settings.FRONTEND_URL}/set-password?uid={uid}&token={token}"
-
-            # Send email
-            send_mail(
-                subject="Set your password",
-                message=f"Hello {user.first_name},\n\nSet your password by clicking this link:\n{link}",
-                from_email=settings.DEFAULT_FROM_EMAIL,
-                recipient_list=[email],
-            )
-
-        return Response({"message": "Invitation sent", "status": "pending", "uid": uid, "token": token})
-
-    # -----------------------------
-    # Create (non-invite)
+    # Create user (limit enforced)
     # -----------------------------
     def perform_create(self, serializer):
         tenant = get_current_tenant()
@@ -132,7 +85,7 @@ class UserViewSet(viewsets.ModelViewSet):
         TenantUser.objects.get_or_create(user=user, tenant=tenant)
 
     # -----------------------------
-    # Soft delete
+    # Soft delete (override DELETE)
     # -----------------------------
     def destroy(self, request, *args, **kwargs):
         user = self.get_object()
@@ -142,7 +95,6 @@ class UserViewSet(viewsets.ModelViewSet):
 
     # -----------------------------
     # Restore user
-    # POST /api/users/{id}/restore/
     # -----------------------------
     @action(detail=True, methods=["post"])
     def restore(self, request, pk=None):
