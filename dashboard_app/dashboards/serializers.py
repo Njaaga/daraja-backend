@@ -48,26 +48,7 @@ class TenantSignupSerializer(serializers.Serializer):
 class UserSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
-        fields = ["email", "first_name", "last_name", "is_staff", "is_superuser"]
-
-    def create(self, validated_data):
-        email = validated_data["email"]
-
-        user, created = User.objects.get_or_create(
-            email=email,
-            defaults={
-                "username": email,
-                "first_name": validated_data.get("first_name", ""),
-                "last_name": validated_data.get("last_name", ""),
-                "is_active": True,
-            },
-        )
-
-        if created:
-            user.set_unusable_password()
-            user.save()
-
-        return user
+        fields = ["id", "username", "first_name", "last_name", "email", "is_active", "is_superuser"]
 
 
 
