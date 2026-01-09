@@ -193,6 +193,31 @@ class UserViewSet(viewsets.ModelViewSet):
 
         return Response({"message": "User restored successfully"})
 
+
+class SetPasswordView(APIView):
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        uid = request.data.get("uid")
+        token = request.data.get("token")
+        password = request.data.get("password")
+
+        if not uid or not token or not password:
+            return Response({"error": "Missing data"}, status=400)
+
+        try:
+            uid = urlsafe_base64_decode(uid).decode()
+            user = User.objects.get(pk=uid)
+        except (TypeError, ValueError, OverflowError, User.DoesNotExist):
+            return Response({"error": "Invalid user"}, status=400)
+
+        if default_token_generator.check_token(user, token):
+            user.set_password(password)
+            user.save()
+            return Response({"success": True, "message": "Password set successfully"})
+        else:
+            return Response({"error": "Invalid or expired token"}, status=400)
+            
 class ForgotPasswordView(APIView):
     permission_classes = [AllowAny]
     """
