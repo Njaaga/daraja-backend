@@ -32,6 +32,8 @@ urlpatterns = [
     # all secured authenticated API endpoints
     path("", include(router.urls)),
 
+    path("set-password/", PasswordSetupView.as_view(), name="set-password"),
+
     path("forgot-password/", ForgotPasswordView.as_view(), name="forgot-password"),
 
     path("reset-password/", ResetPasswordView.as_view(), name="reset-password"),
@@ -40,7 +42,6 @@ urlpatterns = [
     # PUBLIC ENDPOINT (NO AUTH REQUIRED)
     # standalone view -> does NOT inherit router permissions
     # =========================================================
-    path("set-password/", PasswordSetupView.as_view(), name="set-password"),
 
     # dataset adhoc execution endpoint
     path("datasets/run/", DatasetRunAdhocView.as_view(), name="datasets-adhoc-run"),
