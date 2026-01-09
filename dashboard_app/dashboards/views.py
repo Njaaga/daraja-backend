@@ -256,7 +256,6 @@ class CurrentUserView(APIView):
 @method_decorator(csrf_exempt, name="dispatch")
 class PasswordSetupView(APIView):
     permission_classes = [AllowAny]
-    authentication_classes = []  # bypass JWT
 
     def post(self, request):
         uid = request.data.get("uid")
