@@ -64,12 +64,12 @@ class SubscriptionEnforcementMiddleware(MiddlewareMixin):
     ]
 
     def process_request(self, request):
-        path = request.path.rstrip("/")
+    #    path = request.path.rstrip("/")
 
         # Allow exempt paths
-        for prefix in self.EXEMPT_PREFIXES:
-            if path.startswith(prefix.rstrip("/")):
-                return None
+    #    for prefix in self.EXEMPT_PREFIXES:
+    #        if path.startswith(prefix.rstrip("/")):
+    #            return None
 
         tenant = get_current_tenant()
         if not tenant:
