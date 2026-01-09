@@ -29,6 +29,8 @@ router.register(r'charts', ChartViewSet, basename="chart")
 
 urlpatterns = [
 
+    path('users/me/', CurrentUserView.as_view(), name='current-user'),
+    
     # all secured authenticated API endpoints
     path("", include(router.urls)),
 
@@ -43,7 +45,5 @@ urlpatterns = [
 
     # dataset adhoc execution endpoint
     path("datasets/run/", DatasetRunAdhocView.as_view(), name="datasets-adhoc-run"),
-
-    path('users/me/', CurrentUserView.as_view(), name='current-user'),
 
 ]
