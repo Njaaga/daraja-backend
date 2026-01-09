@@ -32,8 +32,6 @@ urlpatterns = [
     # all secured authenticated API endpoints
     path("", include(router.urls)),
 
-    path("set-password/", PasswordSetupView.as_view(), name="set-password"),
-
     path("forgot-password/", ForgotPasswordView.as_view(), name="forgot-password"),
 
     path("reset-password/", ResetPasswordView.as_view(), name="reset-password"),
