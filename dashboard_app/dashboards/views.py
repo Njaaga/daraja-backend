@@ -55,6 +55,7 @@ from datetime import timedelta
 # USERS
 # ---------------------------
 class UserViewSet(viewsets.ModelViewSet):
+    queryset = User.objects.all()
     serializer_class = UserSerializer
     permission_classes = [IsAuthenticated, IsSuperAdmin]
 
