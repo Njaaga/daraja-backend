@@ -65,6 +65,7 @@ class UserViewSet(viewsets.ModelViewSet):
 
     @action(detail=False, methods=["post"], permission_classes=[AllowAny], url_path="set-password")
     def set_password(self, request):
+        uid = request.data.get("uid")
         token = request.data.get("token")
         password = request.data.get("password")
 
