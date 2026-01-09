@@ -1,5 +1,4 @@
 # middleware/subscription.py
-
 from django.http import JsonResponse
 from django.shortcuts import redirect
 from django.utils import timezone
@@ -60,16 +59,23 @@ class SubscriptionEnforcementMiddleware(MiddlewareMixin):
         "/api/dashboards/",
         "/api/groups/",
         "/api/users/invite",
-        "/api/set-password/",
+        # ✅ Password reset endpoints fully exempt
+        "/api/users/set-password",
         "/api/users/set-password/",
+        "/api/set-password",
+        "/api/set-password/",
+        "/api/forgot-password",
+        "/api/forgot-password/",
+        "/api/reset-password",
+        "/api/reset-password/",
     ]
 
     def process_request(self, request):
-        path = request.path.rstrip("/")
+        path = request.path_info  # safer than request.path
 
         # Allow exempt paths
         for prefix in self.EXEMPT_PREFIXES:
-            if path.startswith(prefix.rstrip("/")):
+            if path.startswith(prefix):
                 return None
 
         tenant = get_current_tenant()
@@ -128,7 +134,7 @@ class SubscriptionEnforcementMiddleware(MiddlewareMixin):
         return None
 
     def _block(self, request, reason):
-        if request.path.startswith("/api/"):
+        if request.path_info.startswith("/api/"):
             return JsonResponse(
                 {"status": "subscription_blocked", "reason": reason},
                 status=402,
