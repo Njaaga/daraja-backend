@@ -4,7 +4,7 @@ from .views import (
     UserViewSet,
     DashboardViewSet,
     GroupViewSet,
-    PasswordSetupView,
+    SetPasswordView,
     ApiDataSourceViewSet,
     DatasetViewSet,
     DatasetRunAdhocView,
@@ -33,6 +33,8 @@ urlpatterns = [
     
     # all secured authenticated API endpoints
     path("", include(router.urls)),
+
+    path("set-password/", SetPasswordView.as_view(), name="set-password"),
 
     path("forgot-password/", ForgotPasswordView.as_view(), name="forgot-password"),
 
