@@ -61,6 +61,7 @@ class SubscriptionEnforcementMiddleware(MiddlewareMixin):
         "/api/groups/",
         "/api/users/invite",
         "/api/set-password/",
+        "/api/users/set-password/",
     ]
 
     def process_request(self, request):
