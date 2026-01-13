@@ -31,7 +31,7 @@ class ListPlansView(APIView):
     permission_classes = [AllowAny]
 
     def get(self, request):
-        plans = SubscriptionPlan.objects.all().values("id", "name", "price")
+        plans = SubscriptionPlan.objects.all().values("id", "name", "price", "features")
         return Response(plans)
 
 class CreateStripeCheckoutSession(APIView):
