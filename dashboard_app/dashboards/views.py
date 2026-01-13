@@ -148,6 +148,77 @@ class UserViewSet(viewsets.ModelViewSet):
             status=status.HTTP_201_CREATED,
         )
 
+
+    @action(detail=False, methods=["post"], url_path="bulk_invite")
+    def bulk_invite(self, request):
+        tenant = get_current_tenant()
+        if not tenant:
+            return Response(
+                {"detail": "Tenant not detected"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+    
+        users_data = request.data.get("users", [])
+        if not isinstance(users_data, list) or not users_data:
+            return Response(
+                {"detail": "Invalid users payload"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+    
+        # 🚨 Subscription enforcement (users count)
+        enforce_subscription_limit(tenant, resource="users", amount=len(users_data))
+    
+        invited = []
+        failed = []
+    
+        for row in users_data:
+            try:
+                serializer = self.get_serializer(data=row)
+                serializer.is_valid(raise_exception=True)
+    
+                user = serializer.save(is_active=True)
+                TenantUser.objects.get_or_create(user=user, tenant=tenant)
+    
+                uid = urlsafe_base64_encode(force_bytes(user.pk))
+                token = default_token_generator.make_token(user)
+    
+                setup_link = (
+                    f"{settings.FRONTEND_URL}/set-password"
+                    f"?uid={uid}&token={token}"
+                )
+    
+                send_mail(
+                    subject="You’ve been invited",
+                    message=(
+                        "You’ve been invited.\n\n"
+                        f"Set your password here:\n{setup_link}\n\n"
+                        "This link will expire."
+                    ),
+                    from_email=settings.DEFAULT_FROM_EMAIL,
+                    recipient_list=[user.email],
+                    fail_silently=True,
+                )
+    
+                invited.append({
+                    "email": user.email,
+                    "uid": uid,
+                    "token": token,
+                })
+    
+            except Exception as e:
+                failed.append({
+                    "email": row.get("email"),
+                    "error": str(e),
+                })
+    
+        return Response(
+            {
+                "message": f"{len(invited)} users invited, {len(failed)} failed",
+                "users": invited,
+                "failed": failed,
+            },
+            status=status.HTTP_201_CREATED,
+        )
         
     # -----------------------------
     # Create user (limit enforced)
