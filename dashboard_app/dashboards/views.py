@@ -99,54 +99,68 @@ class UserViewSet(viewsets.ModelViewSet):
 
         return qs.order_by("first_name", "last_name")
 
-    @action(detail=False, methods=["post"], url_path="invite")
-    def invite(self, request):
-        tenant = get_current_tenant()
-        if not tenant:
-            return Response(
-                {"detail": "Tenant not detected"},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-    
-        # 🚨 Subscription limit
-        enforce_subscription_limit(tenant, resource="users")
-    
-        serializer = self.get_serializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-    
-        user = serializer.save(is_active=True)
-        TenantUser.objects.get_or_create(user=user, tenant=tenant)
-    
-        # -----------------------------
-        # INVITE EMAIL WITH TOKEN ✅
-        # -----------------------------
-        try:
-            uid = urlsafe_base64_encode(force_bytes(user.pk))
-            token = default_token_generator.make_token(user)
-    
-            setup_link = (
-                f"{settings.FRONTEND_URL}/set-password"
-                f"?uid={uid}&token={token}"
-            )
-    
-            send_mail(
-                subject="You’ve been invited",
-                message=(
-                    "You’ve been invited.\n\n"
-                    f"Set your password here:\n{setup_link}\n\n"
-                    "This link will expire."
-                ),
-                from_email=settings.DEFAULT_FROM_EMAIL,
-                recipient_list=[user.email],
-                fail_silently=True,  # 🔒 never break user creation
-            )
-        except Exception as e:
-            print("Invite email failed:", str(e))
-    
+@action(detail=False, methods=["post"], url_path="invite")
+def invite(self, request):
+    tenant = get_current_tenant()
+    if not tenant:
         return Response(
-            {"message": "User invited successfully"},
-            status=status.HTTP_201_CREATED,
+            {"detail": "Tenant not detected"},
+            status=status.HTTP_400_BAD_REQUEST,
         )
+
+    # 🚨 Subscription limit
+    enforce_subscription_limit(tenant, resource="users")
+
+    # Validate input
+    serializer = self.get_serializer(data=request.data)
+    serializer.is_valid(raise_exception=True)
+
+    data = serializer.validated_data
+    email = data.get("email").lower().strip()
+
+    # Check if user already exists in this tenant
+    if TenantUser.objects.filter(user__email=email, tenant=tenant).exists():
+        return Response(
+            {"error": "User with this email already exists in tenant"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    # Manually create user (avoid passing tenant to User)
+    user = User.objects.create_user(
+        username=email,
+        email=email,
+        first_name=data.get("first_name", ""),
+        last_name=data.get("last_name", ""),
+        is_active=True,
+    )
+
+    # Attach tenant
+    TenantUser.objects.get_or_create(user=user, tenant=tenant)
+
+    # -----------------------------
+    # INVITE EMAIL WITH TOKEN ✅
+    # -----------------------------
+    try:
+        uid = urlsafe_base64_encode(force_bytes(user.pk))
+        token = default_token_generator.make_token(user)
+
+        setup_link = f"{settings.FRONTEND_URL}/set-password?uid={uid}&token={token}"
+
+        send_mail(
+            subject="You’ve been invited",
+            message=f"You’ve been invited.\n\nSet your password here:\n{setup_link}\n\nThis link will expire.",
+            from_email=settings.DEFAULT_FROM_EMAIL,
+            recipient_list=[user.email],
+            fail_silently=True,  # never break user creation
+        )
+    except Exception as e:
+        print("Invite email failed:", str(e))
+
+    return Response(
+        {"message": "User invited successfully"},
+        status=status.HTTP_201_CREATED,
+    )
+
 
 
     @action(detail=False, methods=["post"], url_path="bulk_invite")
