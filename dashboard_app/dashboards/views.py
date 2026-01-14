@@ -208,7 +208,7 @@ class UserViewSet(viewsets.ModelViewSet):
     
             try:
                 # Enforce subscription PER user
-                enforce_subscription_limit(tenant, resource="users")
+               # enforce_subscription_limit(tenant, resource="users")
     
                 user = User.objects.create_user(
                     username=email,
