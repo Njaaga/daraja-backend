@@ -184,9 +184,14 @@ class UserViewSet(viewsets.ModelViewSet):
                     email=email,
                     first_name=serializer.validated_data.get("first_name", ""),
                     last_name=serializer.validated_data.get("last_name", ""),
-                    tenant=tenant,
                     is_active=False,
                 )
+                
+                TenantUser.objects.create(
+                    user=user,
+                    tenant=tenant
+                )
+
     
                 uid = urlsafe_base64_encode(force_bytes(user.pk))
                 token = default_token_generator.make_token(user)
