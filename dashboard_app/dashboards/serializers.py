@@ -3,7 +3,7 @@ from rest_framework import serializers
 from .models import ApiDataSource, Dataset, Chart, Dashboard, DashboardChart, Group, ChartJoin
 from django.contrib.auth import get_user_model
 from tenants.models import Tenant  # your tenant model
-
+import uuid
 
 User = get_user_model()
 
@@ -45,6 +45,8 @@ class TenantSignupSerializer(serializers.Serializer):
 # ----------------------------------------------------
 # USER SERIALIZER
 # ----------------------------------------------------
+
+
 class UserSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
@@ -59,19 +61,22 @@ class UserSerializer(serializers.ModelSerializer):
         ]
         extra_kwargs = {
             "username": {"required": False},
+            "is_active": {"read_only": True},
+            "is_superuser": {"read_only": True},
         }
 
     def create(self, validated_data):
-        # Ensure username exists
-        if not validated_data.get("username"):
-            validated_data["username"] = validated_data["email"]
+        email = validated_data.get("email")
 
-        user = User(**validated_data)
+        # ✅ Generate a safe unique username
+        validated_data["username"] = email or f"user_{uuid.uuid4().hex[:10]}"
 
-        # 🔑 REQUIRED: invite users should not have a password yet
-        user.set_unusable_password()
+        user = User.objects.create(**validated_data)
 
-        user.save()
+        # Invitations should start inactive
+        user.is_active = False
+        user.save(update_fields=["is_active"])
+
         return user
 
 
