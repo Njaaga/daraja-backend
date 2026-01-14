@@ -48,10 +48,6 @@ from .permissions import IsSuperAdmin
 from rest_framework.exceptions import PermissionDenied
 from rest_framework_simplejwt.tokens import AccessToken
 from datetime import timedelta
-from rest_framework.parsers import MultiPartParser, FormParser
-from openpyxl import load_workbook
-from django.core.validators import validate_email
-from django.core.exceptions import ValidationError
 
 
 
@@ -171,7 +167,6 @@ class UserViewSet(viewsets.ModelViewSet):
         detail=False,
         methods=["post"],
         url_path="bulk_invite",
-        parser_classes=[JSONParser],
     )
     def bulk_invite(self, request):
         tenant = get_current_tenant()
