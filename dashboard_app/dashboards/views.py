@@ -164,51 +164,113 @@ class UserViewSet(viewsets.ModelViewSet):
 
 
 
-    @action(detail=False, methods=["post"])
+    @action(detail=False, methods=["post"], url_path="bulk_invite")
     def bulk_invite(self, request):
-        users_data = request.data.get("users", [])
-        created_users = []
-
-        tenant_name = getattr(request.tenant, "schema_name", None)
-        if not tenant_name:
-            return Response({"error": "Tenant context missing"}, status=400)
-
-        with schema_context(tenant_name):
-            for u in users_data:
-                first_name = u.get("first_name")
-                last_name = u.get("last_name")
-                email = u.get("email")
-                if first_name and last_name and email:
-                    user, created = User.objects.get_or_create(
-                        email=email,
-                        defaults={
-                            "username": email,
-                            "first_name": first_name,
-                            "last_name": last_name,
-                            "is_active": True,
-                        },
+        tenant = get_current_tenant()
+        if not tenant:
+            return Response(
+                {"detail": "Tenant not detected"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+    
+        users = request.data.get("users")
+    
+        if not isinstance(users, list) or not users:
+            return Response(
+                {"detail": "users must be a non-empty list"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+    
+        invited = []
+        failed = []
+    
+        for row in users:
+            try:
+                # -----------------------------
+                # Normalize & validate input
+                # -----------------------------
+                first_name = (row.get("first_name") or "").strip()
+                last_name = (row.get("last_name") or "").strip()
+                email = (row.get("email") or "").strip().lower()
+    
+                if not email:
+                    failed.append({"email": None, "error": "Missing email"})
+                    continue
+    
+                try:
+                    validate_email(email)
+                except ValidationError:
+                    failed.append({"email": email, "error": "Invalid email"})
+                    continue
+    
+                # -----------------------------
+                # Subscription limit (PER USER)
+                # -----------------------------
+                enforce_subscription_limit(tenant, resource="users")
+    
+                # -----------------------------
+                # Tenant-level duplicate check
+                # -----------------------------
+                if TenantUser.objects.filter(user__email=email, tenant=tenant).exists():
+                    failed.append(
+                        {"email": email, "error": "User already exists in tenant"}
                     )
-
-                    # Generate UID & token
+                    continue
+    
+                # -----------------------------
+                # Global user creation
+                # -----------------------------
+                user = User.objects.create_user(
+                    username=email,
+                    email=email,
+                    first_name=first_name,
+                    last_name=last_name,
+                    is_active=True,
+                )
+    
+                TenantUser.objects.get_or_create(user=user, tenant=tenant)
+    
+                # -----------------------------
+                # Invite email (non-fatal)
+                # -----------------------------
+                try:
                     uid = urlsafe_base64_encode(force_bytes(user.pk))
                     token = default_token_generator.make_token(user)
-                    link = f"{settings.FRONTEND_URL}/set-password?uid={uid}&token={token}"
-
-                    # Send email
+    
+                    setup_link = (
+                        f"{settings.FRONTEND_URL}/set-password"
+                        f"?uid={uid}&token={token}"
+                    )
+    
                     send_mail(
-                        subject="Set your password",
-                        message=f"Hello {user.first_name},\n\nSet your password by clicking this link:\n{link}",
+                        subject="You’ve been invited",
+                        message=(
+                            "You’ve been invited.\n\n"
+                            f"Set your password here:\n{setup_link}\n\n"
+                            "This link will expire."
+                        ),
                         from_email=settings.DEFAULT_FROM_EMAIL,
                         recipient_list=[email],
+                        fail_silently=True,
                     )
-
-                    user_data = UserSerializer(user).data
-                    user_data.update({"uid": uid, "token": token})
-                    created_users.append(user_data)
-
+                except Exception as e:
+                    # Never fail the invite because of email
+                    print("Invite email failed:", str(e))
+    
+                invited.append(email)
+    
+            except IntegrityError:
+                failed.append({"email": email, "error": "User already exists"})
+            except Exception as e:
+                failed.append({"email": email, "error": str(e)})
+    
         return Response(
-            {"message": f"{len(created_users)} users invited successfully", "users": created_users},
-            status=status.HTTP_201_CREATED
+            {
+                "message": f"{len(invited)} users invited",
+                "invited": invited,
+                "failed": failed,
+            },
+            status=status.HTTP_201_CREATED,
         )
 
         
