@@ -147,13 +147,13 @@ class UserViewSet(viewsets.ModelViewSet):
     
             setup_link = f"{settings.FRONTEND_URL}/set-password?uid={uid}&token={token}"
     
-            send_mail(
-                subject="You’ve been invited",
-                message=f"You’ve been invited.\n\nSet your password here:\n{setup_link}\n\nThis link will expire.",
-                from_email=settings.DEFAULT_FROM_EMAIL,
-                recipient_list=[user.email],
-                fail_silently=True,  # never break user creation
-            )
+          #  send_mail(
+           #     subject="You’ve been invited",
+            #    message=f"You’ve been invited.\n\nSet your password here:\n{setup_link}\n\nThis link will expire.",
+             #   from_email=settings.DEFAULT_FROM_EMAIL,
+              #  recipient_list=[user.email],
+               # fail_silently=True,  # never break user creation
+           # )
         except Exception as e:
             print("Invite email failed:", str(e))
     
