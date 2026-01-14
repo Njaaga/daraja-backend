@@ -48,6 +48,10 @@ from .permissions import IsSuperAdmin
 from rest_framework.exceptions import PermissionDenied
 from rest_framework_simplejwt.tokens import AccessToken
 from datetime import timedelta
+from rest_framework.parsers import MultiPartParser, FormParser
+from openpyxl import load_workbook
+from django.core.validators import validate_email
+from django.core.exceptions import ValidationError
 
 
 
@@ -163,53 +167,107 @@ class UserViewSet(viewsets.ModelViewSet):
 
 
 
-    @action(detail=False, methods=["post"])
+    @action(
+        detail=False,
+        methods=["post"],
+        url_path="bulk-invite",
+        parser_classes=[MultiPartParser, FormParser],
+    )
     def bulk_invite(self, request):
-        users_data = request.data.get("users", [])
-        created_users = []
-
-        tenant_name = getattr(request.tenant, "schema_name", None)
-        if not tenant_name:
-            return Response({"error": "Tenant context missing"}, status=400)
-
-        with schema_context(tenant_name):
-            for u in users_data:
-                first_name = u.get("first_name")
-                last_name = u.get("last_name")
-                email = u.get("email")
-                if first_name and last_name and email:
-                    user, created = User.objects.get_or_create(
-                        email=email,
-                        defaults={
-                            "username": email,
-                            "first_name": first_name,
-                            "last_name": last_name,
-                            "is_active": True,
-                        },
-                    )
-
-                    # Generate UID & token
-                    uid = urlsafe_base64_encode(force_bytes(user.pk))
-                    token = default_token_generator.make_token(user)
-                    link = f"{settings.FRONTEND_URL}/set-password?uid={uid}&token={token}"
-
-                    # Send email
-                    send_mail(
-                        subject="Set your password",
-                        message=f"Hello {user.first_name},\n\nSet your password by clicking this link:\n{link}",
-                        from_email=settings.DEFAULT_FROM_EMAIL,
-                        recipient_list=[email],
-                    )
-
-                    user_data = UserSerializer(user).data
-                    user_data.update({"uid": uid, "token": token})
-                    created_users.append(user_data)
-
+        tenant = get_current_tenant()
+        if not tenant:
+            return Response({"detail": "Tenant not detected"}, status=400)
+    
+        # 🚨 Subscription limit (rough check, exact enforced per-user)
+        file = request.FILES.get("file")
+        if not file:
+            return Response({"detail": "Excel file is required"}, status=400)
+    
+        wb = load_workbook(file)
+        ws = wb.active
+    
+        headers = [cell.value for cell in ws[1]]
+        required = {"first_name", "last_name", "email"}
+    
+        if not required.issubset(set(headers)):
+            return Response(
+                {"detail": "Excel must contain first_name, last_name, email columns"},
+                status=400,
+            )
+    
+        header_index = {h: i for i, h in enumerate(headers)}
+    
+        invited = []
+        failed = []
+    
+        for row in ws.iter_rows(min_row=2, values_only=True):
+            first_name = row[header_index["first_name"]] or ""
+            last_name = row[header_index["last_name"]] or ""
+            email = (row[header_index["email"]] or "").strip().lower()
+    
+            if not email:
+                failed.append({"email": None, "error": "Missing email"})
+                continue
+    
+            try:
+                validate_email(email)
+            except ValidationError:
+                failed.append({"email": email, "error": "Invalid email"})
+                continue
+    
+            # Check existing user in tenant
+            if TenantUser.objects.filter(user__email=email, tenant=tenant).exists():
+                failed.append({"email": email, "error": "User already exists"})
+                continue
+    
+            try:
+                # Enforce subscription PER user
+                enforce_subscription_limit(tenant, resource="users")
+    
+                user = User.objects.create_user(
+                    username=email,
+                    email=email,
+                    first_name=first_name,
+                    last_name=last_name,
+                    is_active=True,
+                )
+    
+                TenantUser.objects.create(user=user, tenant=tenant)
+    
+                # Invite email
+                uid = urlsafe_base64_encode(force_bytes(user.pk))
+                token = default_token_generator.make_token(user)
+    
+                setup_link = (
+                    f"{settings.FRONTEND_URL}/set-password"
+                    f"?uid={uid}&token={token}"
+                )
+    
+                send_mail(
+                    subject="You’ve been invited",
+                    message=(
+                        "You’ve been invited.\n\n"
+                        f"Set your password here:\n{setup_link}\n\n"
+                        "This link will expire."
+                    ),
+                    from_email=settings.DEFAULT_FROM_EMAIL,
+                    recipient_list=[email],
+                    fail_silently=True,
+                )
+    
+                invited.append(email)
+    
+            except Exception as e:
+                failed.append({"email": email, "error": str(e)})
+    
         return Response(
-            {"message": f"{len(created_users)} users invited successfully", "users": created_users},
-            status=status.HTTP_201_CREATED
+            {
+                "message": f"{len(invited)} users invited",
+                "invited": invited,
+                "failed": failed,
+            },
+            status=201,
         )
-
 
         
     # -----------------------------
