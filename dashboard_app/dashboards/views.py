@@ -49,7 +49,8 @@ from rest_framework.exceptions import PermissionDenied
 from rest_framework_simplejwt.tokens import AccessToken
 from datetime import timedelta
 from rest_framework.parsers import JSONParser
-
+from django.db import IntegrityError
+from rest_framework.exceptions import APIException
 
 
 # ---------------------------
@@ -164,8 +165,7 @@ class UserViewSet(viewsets.ModelViewSet):
 
 
 
-    from django.db import IntegrityError
-    from rest_framework.exceptions import APIException
+
     
     @action(detail=False, methods=["post"], url_path="bulk_invite")
     def bulk_invite(self, request):
