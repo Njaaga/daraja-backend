@@ -171,39 +171,28 @@ class UserViewSet(viewsets.ModelViewSet):
         detail=False,
         methods=["post"],
         url_path="bulk_invite",
-        parser_classes=[MultiPartParser, FormParser],
+        parser_classes=[JSONParser],
     )
     def bulk_invite(self, request):
         tenant = get_current_tenant()
         if not tenant:
             return Response({"detail": "Tenant not detected"}, status=400)
     
-        # 🚨 Subscription limit (rough check, exact enforced per-user)
-        file = request.FILES.get("file")
-        if not file:
-            return Response({"detail": "Excel file is required"}, status=400)
+        users = request.data.get("users")
     
-        wb = load_workbook(file)
-        ws = wb.active
-    
-        headers = [cell.value for cell in ws[1]]
-        required = {"first_name", "last_name", "email"}
-    
-        if not required.issubset(set(headers)):
+        if not isinstance(users, list) or not users:
             return Response(
-                {"detail": "Excel must contain first_name, last_name, email columns"},
+                {"detail": "users must be a non-empty list"},
                 status=400,
             )
-    
-        header_index = {h: i for i, h in enumerate(headers)}
     
         invited = []
         failed = []
     
-        for row in ws.iter_rows(min_row=2, values_only=True):
-            first_name = row[header_index["first_name"]] or ""
-            last_name = row[header_index["last_name"]] or ""
-            email = (row[header_index["email"]] or "").strip().lower()
+        for row in users:
+            first_name = (row.get("first_name") or "").strip()
+            last_name = (row.get("last_name") or "").strip()
+            email = (row.get("email") or "").strip().lower()
     
             if not email:
                 failed.append({"email": None, "error": "Missing email"})
@@ -266,8 +255,9 @@ class UserViewSet(viewsets.ModelViewSet):
                 "invited": invited,
                 "failed": failed,
             },
-            status=201,
+            status=status.HTTP_201_CREATED,
         )
+
 
         
     # -----------------------------
