@@ -65,19 +65,6 @@ class UserSerializer(serializers.ModelSerializer):
             "is_superuser": {"read_only": True},
         }
 
-    def create(self, validated_data):
-        email = validated_data.get("email")
-
-        # ✅ Generate a safe unique username
-        validated_data["username"] = email or f"user_{uuid.uuid4().hex[:10]}"
-
-        user = User.objects.create(**validated_data)
-
-        # Invitations should start inactive
-        user.is_active = False
-        user.save(update_fields=["is_active"])
-
-        return user
 
 
 
