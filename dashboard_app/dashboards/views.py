@@ -179,6 +179,9 @@ class UserViewSet(viewsets.ModelViewSet):
         invited = []
         failed = []
     
+        # Track emails already processed to prevent duplicates in same request
+        processed_emails = set()
+    
         for row in users_data:
             email = row.get("email", "").lower().strip()
             first_name = row.get("first_name", "").strip()
@@ -188,12 +191,18 @@ class UserViewSet(viewsets.ModelViewSet):
                 failed.append({"email": None, "error": "Missing email"})
                 continue
     
+            if email in processed_emails:
+                failed.append({"email": email, "error": "Duplicate in request"})
+                continue
+    
+            processed_emails.add(email)
+    
             if TenantUser.objects.filter(user__email=email, tenant=tenant).exists():
                 failed.append({"email": email, "error": "User already exists in tenant"})
                 continue
     
             try:
-                # Manually create the user
+                # Manually create user
                 user = User.objects.create_user(
                     username=email,
                     email=email,
@@ -205,7 +214,7 @@ class UserViewSet(viewsets.ModelViewSet):
                 # Attach tenant
                 TenantUser.objects.get_or_create(user=user, tenant=tenant)
     
-                # Generate invite link
+                # Send invite email
                 uid = urlsafe_base64_encode(force_bytes(user.pk))
                 token = default_token_generator.make_token(user)
                 setup_link = f"{settings.FRONTEND_URL}/set-password?uid={uid}&token={token}"
