@@ -173,6 +173,7 @@ class UserViewSet(viewsets.ModelViewSet):
         if not isinstance(users_data, list) or not users_data:
             return Response({"detail": "Invalid users payload"}, status=400)
     
+        # 🚨 Enforce subscription limit
         enforce_subscription_limit(tenant, resource="users", amount=len(users_data))
     
         invited = []
@@ -180,44 +181,38 @@ class UserViewSet(viewsets.ModelViewSet):
     
         for row in users_data:
             email = row.get("email", "").lower().strip()
+            first_name = row.get("first_name", "").strip()
+            last_name = row.get("last_name", "").strip()
     
             if not email:
                 failed.append({"email": None, "error": "Missing email"})
                 continue
     
-            if User.objects.filter(email=email, tenant=tenant).exists():
-                failed.append({"email": email, "error": "User already exists"})
+            if TenantUser.objects.filter(user__email=email, tenant=tenant).exists():
+                failed.append({"email": email, "error": "User already exists in tenant"})
                 continue
     
             try:
-                serializer = self.get_serializer(data=row)
-                serializer.is_valid(raise_exception=True)
-    
+                # Manually create the user
                 user = User.objects.create_user(
                     username=email,
                     email=email,
-                    first_name=serializer.validated_data.get("first_name", ""),
-                    last_name=serializer.validated_data.get("last_name", ""),
-                    is_active=False,
+                    first_name=first_name,
+                    last_name=last_name,
+                    is_active=True,
                 )
-                
-                TenantUser.objects.create(
-                    user=user,
-                    tenant=tenant
-                )
-
     
+                # Attach tenant
+                TenantUser.objects.get_or_create(user=user, tenant=tenant)
+    
+                # Generate invite link
                 uid = urlsafe_base64_encode(force_bytes(user.pk))
                 token = default_token_generator.make_token(user)
-    
-                setup_link = (
-                    f"{settings.FRONTEND_URL}/set-password"
-                    f"?uid={uid}&token={token}"
-                )
+                setup_link = f"{settings.FRONTEND_URL}/set-password?uid={uid}&token={token}"
     
                 send_mail(
                     subject="You’ve been invited",
-                    message=f"Set your password:\n{setup_link}",
+                    message=f"You’ve been invited.\n\nSet your password here:\n{setup_link}\n\nThis link will expire.",
                     from_email=settings.DEFAULT_FROM_EMAIL,
                     recipient_list=[user.email],
                     fail_silently=True,
@@ -236,6 +231,7 @@ class UserViewSet(viewsets.ModelViewSet):
             },
             status=201,
         )
+
 
         
     # -----------------------------
