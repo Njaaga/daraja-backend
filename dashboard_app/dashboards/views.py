@@ -170,7 +170,7 @@ class UserViewSet(viewsets.ModelViewSet):
     @action(
         detail=False,
         methods=["post"],
-        url_path="bulk-invite",
+        url_path="bulk_invite",
         parser_classes=[MultiPartParser, FormParser],
     )
     def bulk_invite(self, request):
