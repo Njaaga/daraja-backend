@@ -192,6 +192,18 @@ class UserViewSet(viewsets.ModelViewSet):
             try:
                 serializer = self.get_serializer(data=row)
                 serializer.is_valid(raise_exception=True)
+                
+                email = serializer.validated_data["email"]
+                
+                user = User.objects.create_user(
+                    username=email,
+                    email=email,
+                    first_name=serializer.validated_data.get("first_name", ""),
+                    last_name=serializer.validated_data.get("last_name", ""),
+                    tenant=tenant,
+                    is_active=False,
+                )
+
     
                 user = serializer.save(is_active=False)  # 🔒 inactive until password set
                 TenantUser.objects.get_or_create(user=user, tenant=tenant)
