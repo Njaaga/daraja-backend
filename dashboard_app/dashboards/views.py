@@ -163,82 +163,51 @@ class UserViewSet(viewsets.ModelViewSet):
 
 
 
-    @action(detail=False, methods=["post"], url_path="bulk_invite")
+    @action(detail=False, methods=["post"])
     def bulk_invite(self, request):
-        tenant = get_current_tenant()
-        if not tenant:
-            return Response({"detail": "Tenant not detected"}, status=400)
-    
         users_data = request.data.get("users", [])
-        if not isinstance(users_data, list) or not users_data:
-            return Response({"detail": "Invalid users payload"}, status=400)
-    
-        # 🚨 Enforce subscription limit
-        enforce_subscription_limit(tenant, resource="users", amount=len(users_data))
-    
-        invited = []
-        failed = []
-    
-        # Track emails already processed to prevent duplicates in same request
-        processed_emails = set()
-    
-        for row in users_data:
-            email = row.get("email", "").lower().strip()
-            first_name = row.get("first_name", "").strip()
-            last_name = row.get("last_name", "").strip()
-    
-            if not email:
-                failed.append({"email": None, "error": "Missing email"})
-                continue
-    
-            if email in processed_emails:
-                failed.append({"email": email, "error": "Duplicate in request"})
-                continue
-    
-            processed_emails.add(email)
-    
-            if TenantUser.objects.filter(user__email=email, tenant=tenant).exists():
-                failed.append({"email": email, "error": "User already exists in tenant"})
-                continue
-    
-            try:
-                # Manually create user
-                user = User.objects.create_user(
-                    username=email,
-                    email=email,
-                    first_name=first_name,
-                    last_name=last_name,
-                    is_active=True,
-                )
-    
-                # Attach tenant
-                TenantUser.objects.get_or_create(user=user, tenant=tenant)
-    
-                # Send invite email
-                uid = urlsafe_base64_encode(force_bytes(user.pk))
-                token = default_token_generator.make_token(user)
-                setup_link = f"{settings.FRONTEND_URL}/set-password?uid={uid}&token={token}"
-    
-                send_mail(
-                    subject="You’ve been invited",
-                    message=f"You’ve been invited.\n\nSet your password here:\n{setup_link}\n\nThis link will expire.",
-                    from_email=settings.DEFAULT_FROM_EMAIL,
-                    recipient_list=[user.email],
-                    fail_silently=True,
-                )
-    
-                invited.append({"email": user.email})
-    
-            except Exception as e:
-                failed.append({"email": email, "error": str(e)})
-    
+        created_users = []
+
+        tenant_name = getattr(request.tenant, "schema_name", None)
+        if not tenant_name:
+            return Response({"error": "Tenant context missing"}, status=400)
+
+        with schema_context(tenant_name):
+            for u in users_data:
+                first_name = u.get("first_name")
+                last_name = u.get("last_name")
+                email = u.get("email")
+                if first_name and last_name and email:
+                    user, created = User.objects.get_or_create(
+                        email=email,
+                        defaults={
+                            "username": email,
+                            "first_name": first_name,
+                            "last_name": last_name,
+                            "is_active": True,
+                        },
+                    )
+
+                    # Generate UID & token
+                    uid = urlsafe_base64_encode(force_bytes(user.pk))
+                    token = default_token_generator.make_token(user)
+                    link = f"{settings.FRONTEND_URL}/set-password?uid={uid}&token={token}"
+
+                    # Send email
+                    send_mail(
+                        subject="Set your password",
+                        message=f"Hello {user.first_name},\n\nSet your password by clicking this link:\n{link}",
+                        from_email=settings.DEFAULT_FROM_EMAIL,
+                        recipient_list=[email],
+                    )
+
+                    user_data = UserSerializer(user).data
+                    user_data.update({"uid": uid, "token": token})
+                    created_users.append(user_data)
+
         return Response(
-            {
-                "message": f"{len(invited)} users invited, {len(failed)} failed",
-                "invited": invited,
-                "failed": failed,
-            },
-            status=201,
+            {"message": f"{len(created_users)} users invited successfully", "users": created_users},
+            status=status.HTTP_201_CREATED
         )
 
 
