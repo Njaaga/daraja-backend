@@ -153,19 +153,12 @@ class UserViewSet(viewsets.ModelViewSet):
     def bulk_invite(self, request):
         tenant = get_current_tenant()
         if not tenant:
-            return Response(
-                {"detail": "Tenant not detected"},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+            return Response({"detail": "Tenant not detected"}, status=400)
     
         users_data = request.data.get("users", [])
         if not isinstance(users_data, list) or not users_data:
-            return Response(
-                {"detail": "Invalid users payload"},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+            return Response({"detail": "Invalid users payload"}, status=400)
     
-        # 🚨 Subscription enforcement
         enforce_subscription_limit(tenant, resource="users", amount=len(users_data))
     
         invited = []
@@ -175,26 +168,17 @@ class UserViewSet(viewsets.ModelViewSet):
             email = row.get("email", "").lower().strip()
     
             if not email:
-                failed.append({
-                    "email": None,
-                    "error": "Missing email",
-                })
+                failed.append({"email": None, "error": "Missing email"})
                 continue
     
-            # ❌ Skip existing users in this tenant
-            if User.objects.filter(email=email, tenantuser__tenant=tenant).exists():
-                failed.append({
-                    "email": email,
-                    "error": "User already exists",
-                })
+            if User.objects.filter(email=email, tenant=tenant).exists():
+                failed.append({"email": email, "error": "User already exists"})
                 continue
     
             try:
                 serializer = self.get_serializer(data=row)
                 serializer.is_valid(raise_exception=True)
-                
-                email = serializer.validated_data["email"]
-                
+    
                 user = User.objects.create_user(
                     username=email,
                     email=email,
@@ -203,10 +187,6 @@ class UserViewSet(viewsets.ModelViewSet):
                     tenant=tenant,
                     is_active=False,
                 )
-
-    
-                user = serializer.save(is_active=False)  # 🔒 inactive until password set
-                TenantUser.objects.get_or_create(user=user, tenant=tenant)
     
                 uid = urlsafe_base64_encode(force_bytes(user.pk))
                 token = default_token_generator.make_token(user)
@@ -218,35 +198,24 @@ class UserViewSet(viewsets.ModelViewSet):
     
                 send_mail(
                     subject="You’ve been invited",
-                    message=(
-                        "You’ve been invited.\n\n"
-                        f"Set your password here:\n{setup_link}\n\n"
-                        "This link will expire."
-                    ),
+                    message=f"Set your password:\n{setup_link}",
                     from_email=settings.DEFAULT_FROM_EMAIL,
                     recipient_list=[user.email],
                     fail_silently=True,
                 )
     
-                invited.append({
-                    "email": user.email,
-                    "uid": uid,
-                    "token": token,
-                })
+                invited.append({"email": user.email})
     
             except Exception as e:
-                failed.append({
-                    "email": email,
-                    "error": str(e),
-                })
+                failed.append({"email": email, "error": str(e)})
     
         return Response(
             {
                 "message": f"{len(invited)} users invited, {len(failed)} failed",
-                "users": invited,
+                "invited": invited,
                 "failed": failed,
             },
-            status=status.HTTP_201_CREATED,
+            status=201,
         )
 
         
