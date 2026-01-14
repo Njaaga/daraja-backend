@@ -165,18 +165,35 @@ class UserViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
     
-        # 🚨 Subscription enforcement (users count)
+        # 🚨 Subscription enforcement
         enforce_subscription_limit(tenant, resource="users", amount=len(users_data))
     
         invited = []
         failed = []
     
         for row in users_data:
+            email = row.get("email", "").lower().strip()
+    
+            if not email:
+                failed.append({
+                    "email": None,
+                    "error": "Missing email",
+                })
+                continue
+    
+            # ❌ Skip existing users in this tenant
+            if User.objects.filter(email=email, tenantuser__tenant=tenant).exists():
+                failed.append({
+                    "email": email,
+                    "error": "User already exists",
+                })
+                continue
+    
             try:
                 serializer = self.get_serializer(data=row)
                 serializer.is_valid(raise_exception=True)
     
-                user = serializer.save(is_active=True)
+                user = serializer.save(is_active=False)  # 🔒 inactive until password set
                 TenantUser.objects.get_or_create(user=user, tenant=tenant)
     
                 uid = urlsafe_base64_encode(force_bytes(user.pk))
@@ -207,7 +224,7 @@ class UserViewSet(viewsets.ModelViewSet):
     
             except Exception as e:
                 failed.append({
-                    "email": row.get("email"),
+                    "email": email,
                     "error": str(e),
                 })
     
@@ -219,6 +236,7 @@ class UserViewSet(viewsets.ModelViewSet):
             },
             status=status.HTTP_201_CREATED,
         )
+
         
     # -----------------------------
     # Create user (limit enforced)
