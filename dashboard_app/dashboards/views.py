@@ -167,103 +167,107 @@ class UserViewSet(viewsets.ModelViewSet):
 
 
     
-    @action(detail=False, methods=["post"], url_path="bulk_invite")
-    def bulk_invite(self, request):
+@action(
+    detail=False,
+    methods=["post"],
+    url_path="bulk_invite",
+)
+def bulk_invite(self, request):
+    tenant = get_current_tenant()
+    if not tenant:
+        return Response(
+            {"detail": "Tenant not detected"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    users = request.data.get("users", [])
+
+    if not isinstance(users, list) or not users:
+        return Response(
+            {"detail": "users must be a non-empty list"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    invited = []
+    failed = []
+
+    for user_data in users:
+        serializer = self.get_serializer(data=user_data)
+
+        if not serializer.is_valid():
+            failed.append({
+                "email": user_data.get("email"),
+                "error": serializer.errors,
+            })
+            continue
+
+        data = serializer.validated_data
+        email = data["email"].lower().strip()
+
+        # Already exists in tenant
+        if TenantUser.objects.filter(user__email=email, tenant=tenant).exists():
+            failed.append({
+                "email": email,
+                "error": "User already exists in tenant",
+            })
+            continue
+
         try:
-            tenant = get_current_tenant()
-            if not tenant:
-                return Response(
-                    {"detail": "Tenant not detected"},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
-    
-            users = request.data.get("users")
-            if not isinstance(users, list) or not users:
-                return Response(
-                    {"detail": "users must be a non-empty list"},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
-    
-            invited = []
-            failed = []
-    
-            for row in users:
-                email = None
-                try:
-                    first_name = (row.get("first_name") or "").strip()
-                    last_name = (row.get("last_name") or "").strip()
-                    email = (row.get("email") or "").strip().lower()
-    
-                    if not email:
-                        failed.append({"email": None, "error": "Missing email"})
-                        continue
-    
-                    validate_email(email)
-    
-                 #   enforce_subscription_limit(tenant, resource="users")
-    
-                    if TenantUser.objects.filter(
-                        user__email=email, tenant=tenant
-                    ).exists():
-                        failed.append({
-                            "email": email,
-                            "error": "User already exists in tenant",
-                        })
-                        continue
-    
-                    user = User.objects.create_user(
-                        username=email,
-                        email=email,
-                        first_name=first_name,
-                        last_name=last_name,
-                        is_active=True,
-                    )
-    
-                    TenantUser.objects.get_or_create(user=user, tenant=tenant)
-    
-                    # email is non-fatal
-                    try:
-                        uid = urlsafe_base64_encode(force_bytes(user.pk))
-                        token = default_token_generator.make_token(user)
-                        setup_link = (
-                            f"{settings.FRONTEND_URL}/set-password"
-                            f"?uid={uid}&token={token}"
-                        )
-    
-                        send_mail(
-                            subject="You’ve been invited",
-                            message=f"Set your password:\n{setup_link}",
-                            from_email=settings.DEFAULT_FROM_EMAIL,
-                            recipient_list=[email],
-                            fail_silently=True,
-                        )
-                    except Exception:
-                        pass
-    
-                    invited.append(email)
-    
-                except IntegrityError:
-                    failed.append({"email": email, "error": "User already exists"})
-                except APIException as e:
-                    failed.append({"email": email, "error": e.detail})
-                except Exception as e:
-                    failed.append({"email": email, "error": str(e)})
-    
-            return Response(
-                {
-                    "message": f"{len(invited)} users invited",
-                    "invited": invited,
-                    "failed": failed,
-                },
-                status=status.HTTP_201_CREATED,
+            # Enforce per-user subscription
+            enforce_subscription_limit(tenant, resource="users")
+
+            user = User.objects.create_user(
+                username=email,
+                email=email,
+                first_name=data.get("first_name", ""),
+                last_name=data.get("last_name", ""),
+                is_active=True,
             )
-    
+
+            TenantUser.objects.create(user=user, tenant=tenant)
+
+            # Invite email
+            uid = urlsafe_base64_encode(force_bytes(user.pk))
+            token = default_token_generator.make_token(user)
+            setup_link = (
+                f"{settings.FRONTEND_URL}/set-password"
+                f"?uid={uid}&token={token}"
+            )
+
+            send_mail(
+                subject="You’ve been invited",
+                message=(
+                    "You’ve been invited.\n\n"
+                    f"Set your password here:\n{setup_link}\n\n"
+                    "This link will expire."
+                ),
+                from_email=settings.DEFAULT_FROM_EMAIL,
+                recipient_list=[email],
+                fail_silently=True,
+            )
+
+            invited.append(email)
+
+        except IntegrityError:
+            failed.append({
+                "email": email,
+                "error": "User already exists",
+            })
+
         except Exception as e:
-            # absolute last-resort guard
-            return Response(
-                {"detail": str(e)},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            )
+            failed.append({
+                "email": email,
+                "error": str(e),
+            })
+
+    return Response(
+        {
+            "invited_count": len(invited),
+            "invited": invited,
+            "failed": failed,
+        },
+        status=status.HTTP_201_CREATED,
+    )
 
 
         
