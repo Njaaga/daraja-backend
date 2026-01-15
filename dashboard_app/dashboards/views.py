@@ -200,7 +200,7 @@ class UserViewSet(viewsets.ModelViewSet):
     
                     validate_email(email)
     
-                    enforce_subscription_limit(tenant, resource="users")
+                 #   enforce_subscription_limit(tenant, resource="users")
     
                     if TenantUser.objects.filter(
                         user__email=email, tenant=tenant
