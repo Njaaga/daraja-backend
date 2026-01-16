@@ -174,7 +174,9 @@ class Dashboard(models.Model):
     created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True)
     created_at = models.DateTimeField(default=timezone.now)
     charts = models.ManyToManyField(Chart, through="DashboardChart", related_name="dashboards")
-
+    
+    # 🔥 recycle bin
+    is_deleted = models.BooleanField(default=False)
     def __str__(self):
         return self.name
 
