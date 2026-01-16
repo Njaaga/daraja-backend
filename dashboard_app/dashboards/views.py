@@ -315,6 +315,15 @@ class UserViewSet(viewsets.ModelViewSet):
 
         return Response({"message": "User restored successfully"})
 
+    @action(detail=True, methods=["delete"])
+    def hard_delete(self, request, pk=None):
+        user = self.get_object()
+        user.delete()
+
+        return Response(
+            {"success": True, "message": "User permanently deleted"},
+            status=status.HTTP_200_OK
+        )
 
 class SetPasswordView(APIView):
     permission_classes = [AllowAny]
