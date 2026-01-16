@@ -595,6 +595,16 @@ class ApiDataSourceViewSet(viewsets.ModelViewSet):
             {"success": True, "message": "API source restored"}
         )
 
+    @action(detail=True, methods=["delete"])
+    def hard_delete(self, request, pk=None):
+        ApiDataSource = self.get_object()
+        ApiDataSource.delete()
+
+        return Response(
+            {"success": True, "message": "API Datasource permanently deleted"},
+            status=status.HTTP_200_OK
+        )
+
 
 
 # ---------- Datasets ----------
