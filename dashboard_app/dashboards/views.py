@@ -1056,8 +1056,70 @@ class DashboardViewSet(viewsets.ModelViewSet):
 
     # ---------- Delete dashboard ----------
     def destroy(self, request, *args, **kwargs):
-        self.get_object()  # ensures tenant filtering
-        return super().destroy(request, *args, **kwargs)
+        tenant = get_current_tenant()
+        dashboard = self.get_object()
+
+        # Tenant safety
+        if dashboard.tenant != tenant:
+            return Response(
+                {"detail": "Not allowed"},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        dashboard.is_deleted = True
+        dashboard.save(update_fields=["is_deleted"])
+
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+    @action(detail=True, methods=["post"])
+    def restore(self, request, pk=None):
+        tenant = get_current_tenant()
+
+        try:
+            dashboard = Dashboard.objects.get(
+                pk=pk,
+                tenant=tenant,
+                is_deleted=True
+            )
+        except Dashboard.DoesNotExist:
+            return Response(
+                {"detail": "Dashboard not found or already active"},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        dashboard.is_deleted = False
+        dashboard.save(update_fields=["is_deleted"])
+
+        return Response(
+            {"message": "Dashboard restored successfully"},
+            status=status.HTTP_200_OK
+        )
+        
+    @action(detail=True, methods=["delete"], url_path="hard_delete")
+    def hard_delete(self, request, pk=None):
+        tenant = get_current_tenant()
+
+        try:
+            dashboard = Dashboard.objects.get(
+                pk=pk,
+                tenant=tenant,
+                is_deleted=True,  # must be soft-deleted first
+            )
+        except Dashboard.DoesNotExist:
+            return Response(
+                {"detail": "Dashboard not found or not in recycle bin"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        dashboard.delete()
+
+        return Response(
+            {
+                "success": True,
+                "message": "Dashboard permanently deleted"
+            },
+            status=status.HTTP_200_OK
+        )
     
 
 
