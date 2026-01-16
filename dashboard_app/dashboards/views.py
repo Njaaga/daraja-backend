@@ -315,15 +315,32 @@ class UserViewSet(viewsets.ModelViewSet):
 
         return Response({"message": "User restored successfully"})
 
-    @action(detail=True, methods=["delete"])
+    @action(detail=True, methods=["delete"], url_path="hard_delete")
     def hard_delete(self, request, pk=None):
-        user = self.get_object()
+        tenant = get_current_tenant()
+
+        try:
+            user = User.objects.get(
+                pk=pk,
+                tenantuser__tenant=tenant,
+                is_active=False,  # must already be soft-deleted
+            )
+        except User.DoesNotExist:
+            return Response(
+                {"detail": "User not found or not in recycle bin"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
         user.delete()
 
         return Response(
-            {"success": True, "message": "User permanently deleted"},
+            {
+                "success": True,
+                "message": "User permanently deleted"
+            },
             status=status.HTTP_200_OK
         )
+
 
 class SetPasswordView(APIView):
     permission_classes = [AllowAny]
