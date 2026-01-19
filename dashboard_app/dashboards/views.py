@@ -1063,20 +1063,14 @@ class DashboardViewSet(viewsets.ModelViewSet):
 
     # ---------- Delete dashboard ----------
     def destroy(self, request, *args, **kwargs):
-        tenant = get_current_tenant()
         dashboard = self.get_object()
-
-        # Tenant safety
-        if dashboard.tenant != tenant:
-            return Response(
-                {"detail": "Not allowed"},
-                status=status.HTTP_403_FORBIDDEN
-            )
-
         dashboard.is_deleted = True
-        dashboard.save(update_fields=["is_deleted"])
+        dashboard.save()
 
-        return Response(status=status.HTTP_204_NO_CONTENT)
+        return Response(
+            {"success": True, "message": "Dataset moved to recycle bin"},
+            status=status.HTTP_200_OK
+        )
 
     @action(detail=True, methods=["post"])
     def restore(self, request, pk=None):
