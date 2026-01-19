@@ -1002,16 +1002,23 @@ class DashboardViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         tenant = get_current_tenant()
         user = self.request.user
+    
         if not tenant:
             return Dashboard.objects.none()
-
-        # Only dashboards the user owns or was granted through groups
-        return Dashboard.objects.filter(
+    
+        qs = Dashboard.objects.filter(
             tenant=tenant
         ).filter(
             Q(created_by=user) |
             Q(groups__users=user)
         ).distinct()
+    
+        # ✅ allow deleted dashboards when requested
+        if self.request.query_params.get("include_deleted") == "True":
+            return qs
+    
+        # default: hide deleted dashboards
+        return qs.filter(is_deleted=False)
 
     # ---------- Assign tenant on creation with limit enforcement ----------
     def perform_create(self, serializer):
