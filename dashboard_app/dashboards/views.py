@@ -1001,13 +1001,19 @@ class DashboardViewSet(viewsets.ModelViewSet):
     # ---------- Tenant-aware queryset ----------
     def get_queryset(self):
         tenant = get_current_tenant()
+        user = self.request.user
         show_deleted = self.request.query_params.get("include_deleted")
-
-        qs = Dashboard.objects.filter(tenant=tenant)
-
+    
+        qs = Dashboard.objects.filter(
+            tenant=tenant
+        ).filter(
+            Q(created_by=user) |
+            Q(groups__users=user)
+        ).distinct()
+    
         if show_deleted == "true":
             return qs.filter(is_deleted=True)
-
+    
         return qs.filter(is_deleted=False)
 
     # ---------- Assign tenant on creation with limit enforcement ----------
