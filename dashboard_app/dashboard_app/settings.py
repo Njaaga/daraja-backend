@@ -17,9 +17,9 @@ SECRET_KEY = os.environ.get("DJANGO_SECRET_KEY", "replace-me-in-production")
 DEBUG = False
 
 ALLOWED_HOSTS = [
+    "api.darajatechnologies.ca",
     "darajatechnologies.ca",
     "www.darajatechnologies.ca",
-    "api.darajatechnologies.ca",
     "18.220.106.255",
 ]
 
