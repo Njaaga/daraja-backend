@@ -70,7 +70,7 @@ MIDDLEWARE = [
 # CORS & CSRF (fixed)
 # --------------------------------------------------
 CORS_ALLOWED_ORIGINS = [
-    "https://daraja-frontend-dl85.vercel.app",
+    "https://reporting.darajatechnologies.ca",
 ]
 
 CORS_ALLOW_CREDENTIALS = True
