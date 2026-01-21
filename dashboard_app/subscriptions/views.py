@@ -130,10 +130,48 @@ logger = logging.getLogger(__name__)
 
 
 def ts_to_date(ts):
-    if not ts:
-        return None
-    return datetime.fromtimestamp(ts, tz=dt_timezone.utc).date()
+    """
+    Convert Stripe UNIX timestamp to DATE safely.
+    IMPORTANT: Do NOT use datetime or timezone conversion.
+    Stripe billing is date-based.
+    """
+    return date.fromtimestamp(ts) if ts else None
 
+
+def derive_end_ts(subscription, start_ts):
+    """
+    Stripe may omit current_period_end for new / trial subscriptions.
+    Derive it safely from price interval.
+    """
+    end_ts = subscription.get("current_period_end")
+    if end_ts:
+        return end_ts
+
+    if not start_ts:
+        return None
+
+    try:
+        price = subscription["items"]["data"][0]["price"]
+        recurring = price.get("recurring", {})
+        interval = recurring.get("interval")
+        interval_count = recurring.get("interval_count", 1)
+
+        SECONDS_PER_DAY = 86400
+
+        if interval == "month":
+            return start_ts + (30 * SECONDS_PER_DAY * interval_count)
+        if interval == "year":
+            return start_ts + (365 * SECONDS_PER_DAY * interval_count)
+
+    except Exception as e:
+        logger.warning(f"Could not derive end date: {e}")
+
+    return None
+
+
+# ----------------------------------------------------------------------
+# Webhook
+# ----------------------------------------------------------------------
 
 @csrf_exempt
 def stripe_webhook(request):
@@ -173,7 +211,7 @@ def stripe_webhook(request):
     logger.info(f"Stripe webhook received: {event_type}")
 
     # ------------------------------------------------------------------
-    # Handle subscription lifecycle events
+    # Only handle subscription lifecycle events
     # ------------------------------------------------------------------
     if event_type not in (
         "customer.subscription.created",
@@ -183,16 +221,22 @@ def stripe_webhook(request):
         return HttpResponse(status=200)
 
     # ------------------------------------------------------------------
-    # Retrieve full subscription (Stripe best practice)
+    # Retrieve FULL subscription (Stripe best practice)
     # ------------------------------------------------------------------
     try:
-        subscription = stripe.Subscription.retrieve(data["id"])
+        subscription = stripe.Subscription.retrieve(
+            data["id"],
+            expand=["items.data.price"]
+        )
     except Exception as e:
         logger.exception(
-            f"Failed to retrieve full subscription {data.get('id')}: {e}"
+            f"Failed to retrieve subscription {data.get('id')}: {e}"
         )
-        subscription = data  # fallback to partial payload
+        subscription = data  # fallback
 
+    # ------------------------------------------------------------------
+    # Resolve tenant + plan
+    # ------------------------------------------------------------------
     metadata = subscription.get("metadata", {})
     tenant_slug = metadata.get("tenant_slug")
     plan_id = metadata.get("plan_id")
@@ -212,21 +256,28 @@ def stripe_webhook(request):
     )
 
     # ------------------------------------------------------------------
-    # Resolve subscription dates (SAFE)
+    # Resolve dates (CORRECTLY)
     # ------------------------------------------------------------------
-    start_date = ts_to_date(
+    start_ts = (
         subscription.get("current_period_start")
         or subscription.get("start_date")
     )
-    end_date = ts_to_date(subscription.get("current_period_end"))
 
+    end_ts = derive_end_ts(subscription, start_ts)
+
+    start_date = ts_to_date(start_ts)
+    end_date = ts_to_date(end_ts)
+
+    # ------------------------------------------------------------------
+    # Resolve status
+    # ------------------------------------------------------------------
     status = subscription.get("status")
     cancel_at_period_end = subscription.get("cancel_at_period_end", False)
 
     active = status in ("active", "trialing") and not cancel_at_period_end
 
     # ------------------------------------------------------------------
-    # Build defaults WITHOUT overwriting valid dates
+    # Build defaults (DO NOT overwrite with NULLs)
     # ------------------------------------------------------------------
     defaults = {
         "tenant": tenant,
@@ -246,16 +297,17 @@ def stripe_webhook(request):
         defaults["end_date"] = end_date
 
     # ------------------------------------------------------------------
-    # UPSERT TenantSubscription (idempotent)
+    # UPSERT subscription (idempotent)
     # ------------------------------------------------------------------
-    subscription_obj, created = TenantSubscription.objects.update_or_create(
+    sub_obj, created = TenantSubscription.objects.update_or_create(
         stripe_subscription_id=subscription["id"],
         defaults=defaults,
     )
 
     logger.info(
-        f"Subscription synced for tenant={tenant_slug} "
-        f"(created={created}, active={active})"
+        f"Subscription synced: tenant={tenant_slug}, "
+        f"created={created}, active={active}, "
+        f"start={start_date}, end={end_date}"
     )
 
     # ------------------------------------------------------------------
@@ -264,9 +316,8 @@ def stripe_webhook(request):
     default_pm = subscription.get("default_payment_method")
 
     if not default_pm:
-        customer_id = subscription.get("customer")
         try:
-            customer = stripe.Customer.retrieve(customer_id)
+            customer = stripe.Customer.retrieve(subscription.get("customer"))
             default_pm = customer.invoice_settings.default_payment_method
         except Exception:
             default_pm = None
