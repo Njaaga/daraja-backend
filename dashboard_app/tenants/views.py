@@ -28,23 +28,31 @@ User = get_user_model()
 
 def build_frontend_url(request, path: str) -> str:
     """
-    Builds a subdomain-aware frontend URL.
-    - localhost → http://tenant.localhost:3000
-    - production → https://tenant.domain.com
+    Builds a frontend URL.
+    - DEV:  http://tenant.localhost:3000
+    - PROD: https://reporting.darajatechnologies.ca
     """
 
-    protocol = "https" if not settings.DEBUG else "http"
-
+    protocol = "http" if settings.DEBUG else "https"
     raw_host = request.get_host().split(":")[0]
 
+    # -------------------------
     # DEV (localhost)
+    # -------------------------
     if "localhost" in raw_host:
         frontend_port = getattr(settings, "FRONTEND_PORT", 3000)
         return f"{protocol}://{raw_host}:{frontend_port}{path}"
 
-    # PROD
-    frontend_domain = getattr(settings, "FRONTEND_DOMAIN", raw_host)
+    # -------------------------
+    # PROD (explicit frontend URL)
+    # -------------------------
+    frontend_domain = getattr(settings, "FRONTENT_URL", None)
+
+    if not frontend_domain:
+        raise RuntimeError("FRONTENT_URL is not set in settings")
+
     return f"{protocol}://{frontend_domain}{path}"
+
 
 
 @api_view(["POST"])
