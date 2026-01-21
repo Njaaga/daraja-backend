@@ -129,37 +129,6 @@ logger = logging.getLogger(__name__)
 
 
 
-def derive_end_date(start_ts, data):
-    """
-    Stripe does not always send current_period_end on creation.
-    Derive it safely from the price interval.
-    """
-    try:
-        items = data.get("items", {}).get("data", [])
-        if not items:
-            return None
-
-        price = items[0].get("price", {})
-        recurring = price.get("recurring", {})
-
-        interval = recurring.get("interval")
-        interval_count = recurring.get("interval_count", 1)
-
-        start_date = datetime.fromtimestamp(
-            start_ts, tz=dt_timezone.utc
-        ).date()
-
-        if interval == "month":
-            return start_date + timedelta(days=30 * interval_count)
-        if interval == "year":
-            return start_date + timedelta(days=365 * interval_count)
-
-    except Exception:
-        logger.exception("Failed to derive subscription end date")
-
-    return None
-
-
 @csrf_exempt
 def stripe_webhook(request):
     if request.method != "POST":
