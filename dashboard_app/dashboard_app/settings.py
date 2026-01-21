@@ -94,10 +94,10 @@ CORS_ALLOW_METHODS = [
 ]
 
 CSRF_TRUSTED_ORIGINS = [
-    "https://daraja-frontend-dl85.vercel.app",
+    "https://reporting.darajatechnologies.ca",
 ]
 
-FRONTEND_URL = "https://daraja-frontend-dl85.vercel.app"
+FRONTEND_URL = "https://reporting.darajatechnologies.ca"
 
 # --------------------------------------------------
 # URLS & WSGI
