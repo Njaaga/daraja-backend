@@ -129,6 +129,32 @@ logger = logging.getLogger(__name__)
 
 
 
+def derive_end_date(start_ts, data):
+    """
+    If Stripe doesn't send current_period_end, derive it from plan interval.
+    """
+    try:
+        items = data.get("items", {}).get("data", [])
+        if not items:
+            return None
+
+        price = items[0].get("price", {})
+        recurring = price.get("recurring", {})
+
+        interval = recurring.get("interval")
+        interval_count = recurring.get("interval_count", 1)
+
+        start_date = datetime.fromtimestamp(start_ts, tz=dt_timezone.utc).date()
+
+        if interval == "month":
+            return start_date + timedelta(days=30 * interval_count)
+        if interval == "year":
+            return start_date + timedelta(days=365 * interval_count)
+
+    except Exception:
+        return None
+
+
 @csrf_exempt
 def stripe_webhook(request):
     if request.method != "POST":
@@ -142,29 +168,25 @@ def stripe_webhook(request):
         logger.error("Stripe webhook secret not configured")
         return HttpResponse("Webhook secret not configured", status=500)
 
-    # Verify the webhook signature
     try:
         event = stripe.Webhook.construct_event(
             payload=payload, sig_header=sig_header, secret=endpoint_secret
         )
-    except ValueError:
-        logger.error("Invalid payload")
-        return HttpResponse(status=400)
-    except stripe.error.SignatureVerificationError:
-        logger.error("Invalid signature")
-        return HttpResponse(status=400)
     except Exception as e:
         logger.exception(f"Webhook error: {e}")
-        return HttpResponse(status=500)
+        return HttpResponse(status=400)
 
-    # Get event type and data
     event_type = event.get("type")
     data = event.get("data", {}).get("object", {})
 
     logger.info(f"Stripe event received: {event_type} for subscription {data.get('id')}")
 
-    # Only handle subscription create/update events
-    if event_type in ["customer.subscription.created", "customer.subscription.updated"]:
+    if event_type in [
+        "customer.subscription.created",
+        "customer.subscription.updated",
+        "customer.subscription.deleted",
+    ]:
+
         metadata = data.get("metadata", {})
         tenant_slug = metadata.get("tenant_slug")
         plan_id = metadata.get("plan_id")
@@ -179,24 +201,30 @@ def stripe_webhook(request):
             return HttpResponse(status=400)
 
         plan = SubscriptionPlan.objects.filter(id=plan_id).first() if plan_id else None
-        if plan_id and not plan:
-            logger.warning(f"Plan not found for id {plan_id}. Continuing without plan.")
 
-        # Get first subscription item
-        items = data.get("items", {}).get("data", [])
-        if not items:
-            logger.warning("No subscription items found, skipping")
-            return HttpResponse(status=200)
+        # --- FIXED DATE LOGIC ---
+        start_ts = data.get("current_period_start") or data.get("start_date")
+        end_ts = data.get("current_period_end")
 
-        item = items[0]
-        start_ts = item.get("current_period_start")
-        end_ts = item.get("current_period_end")
+        start_date = (
+            datetime.fromtimestamp(start_ts, tz=dt_timezone.utc).date()
+            if start_ts else None
+        )
 
-        start_date = datetime.fromtimestamp(start_ts, tz=dt_timezone.utc).date() if start_ts else None
-        end_date = datetime.fromtimestamp(end_ts, tz=dt_timezone.utc).date() if end_ts else None
+        if end_ts:
+            end_date = datetime.fromtimestamp(end_ts, tz=dt_timezone.utc).date()
+        else:
+            end_date = derive_end_date(start_ts, data)
 
-        active = data.get("status") == "active" and not data.get("cancel_at_period_end", False)
+        # --- ACTIVE LOGIC ---
+        status = data.get("status")
+        cancel_at_period_end = data.get("cancel_at_period_end", False)
 
+        active = status in ("active", "trialing")
+        if event_type == "customer.subscription.deleted":
+            active = False
+
+        # --- SAVE ---
         try:
             sub, created = TenantSubscription.objects.update_or_create(
                 stripe_subscription_id=data.get("id"),
@@ -206,7 +234,7 @@ def stripe_webhook(request):
                     "start_date": start_date,
                     "end_date": end_date,
                     "active": active,
-                    "auto_renew": not data.get("cancel_at_period_end", False),
+                    "auto_renew": not cancel_at_period_end,
                     "max_api_rows": plan.max_api_rows if plan else 0,
                     "max_dashboards": plan.max_dashboards if plan else 0,
                     "max_datasets": plan.max_datasets if plan else 0,
@@ -219,7 +247,6 @@ def stripe_webhook(request):
             logger.exception(f"Failed to save subscription: {e}")
             return HttpResponse(status=500)
 
-    # Always return 200 to Stripe if we handled it
     return HttpResponse(status=200)
 
 @method_decorator(csrf_exempt, name="dispatch")
