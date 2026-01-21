@@ -28,28 +28,17 @@ User = get_user_model()
 
 def build_frontend_url(request, path: str) -> str:
     """
-    Builds a frontend URL.
-    - DEV:  http://tenant.localhost:3000
-    - PROD: https://reporting.darajatechnologies.ca
+    Builds a frontend URL using the configured FRONTENT_URL.
+    Example:
+    - https://reporting.darajatechnologies.ca/verify-email
     """
 
-    protocol = "http" if settings.DEBUG else "https"
-    raw_host = request.get_host().split(":")[0]
-
-    # -------------------------
-    # DEV (localhost)
-    # -------------------------
-    if "localhost" in raw_host:
-        frontend_port = getattr(settings, "FRONTEND_PORT", 3000)
-        return f"{protocol}://{raw_host}:{frontend_port}{path}"
-
-    # -------------------------
-    # PROD (explicit frontend URL)
-    # -------------------------
     frontend_domain = getattr(settings, "FRONTENT_URL", None)
 
     if not frontend_domain:
         raise RuntimeError("FRONTENT_URL is not set in settings")
+
+    protocol = "http" if settings.DEBUG else "https"
 
     return f"{protocol}://{frontend_domain}{path}"
 
