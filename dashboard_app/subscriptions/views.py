@@ -129,90 +129,27 @@ logger = logging.getLogger(__name__)
 
 
 
-def ts_to_date(ts):
-    """
-    Convert Stripe UNIX timestamp to DATE safely.
-    IMPORTANT: Do NOT use datetime or timezone conversion.
-    Stripe billing is date-based.
-    """
-    return date.fromtimestamp(ts) if ts else None
-
-
-def derive_end_ts(subscription, start_ts):
-    """
-    Stripe may omit current_period_end for new / trial subscriptions.
-    Derive it safely from price interval.
-    """
-    end_ts = subscription.get("current_period_end")
-    if end_ts:
-        return end_ts
-
-    if not start_ts:
-        return None
-
-    try:
-        price = subscription["items"]["data"][0]["price"]
-        recurring = price.get("recurring", {})
-        interval = recurring.get("interval")
-        interval_count = recurring.get("interval_count", 1)
-
-        SECONDS_PER_DAY = 86400
-
-        if interval == "month":
-            return start_ts + (30 * SECONDS_PER_DAY * interval_count)
-        if interval == "year":
-            return start_ts + (365 * SECONDS_PER_DAY * interval_count)
-
-    except Exception as e:
-        logger.warning(f"Could not derive end date: {e}")
-
-    return None
-
-
-# ----------------------------------------------------------------------
-# Webhook
-# ----------------------------------------------------------------------
-
 @csrf_exempt
 def stripe_webhook(request):
     if request.method != "POST":
-        return HttpResponse("Method not allowed", status=405)
+        return HttpResponse(status=405)
 
     payload = request.body
     sig_header = request.META.get("HTTP_STRIPE_SIGNATURE")
-    endpoint_secret = settings.STRIPE_WEBHOOK_SECRET
 
-    if not endpoint_secret:
-        logger.error("Stripe webhook secret not configured")
-        return HttpResponse(status=500)
-
-    # ------------------------------------------------------------------
-    # Verify Stripe signature
-    # ------------------------------------------------------------------
     try:
         event = stripe.Webhook.construct_event(
-            payload=payload,
-            sig_header=sig_header,
-            secret=endpoint_secret,
+            payload,
+            sig_header,
+            settings.STRIPE_WEBHOOK_SECRET,
         )
-    except ValueError:
-        logger.error("Invalid Stripe payload")
+    except Exception:
+        logger.exception("Stripe webhook verification failed")
         return HttpResponse(status=400)
-    except stripe.error.SignatureVerificationError:
-        logger.error("Invalid Stripe signature")
-        return HttpResponse(status=400)
-    except Exception as e:
-        logger.exception(f"Stripe webhook error: {e}")
-        return HttpResponse(status=500)
 
     event_type = event["type"]
     data = event["data"]["object"]
 
-    logger.info(f"Stripe webhook received: {event_type}")
-
-    # ------------------------------------------------------------------
-    # Only handle subscription lifecycle events
-    # ------------------------------------------------------------------
     if event_type not in (
         "customer.subscription.created",
         "customer.subscription.updated",
@@ -220,126 +157,70 @@ def stripe_webhook(request):
     ):
         return HttpResponse(status=200)
 
-    # ------------------------------------------------------------------
-    # Retrieve FULL subscription (Stripe best practice)
-    # ------------------------------------------------------------------
-    try:
-        subscription = stripe.Subscription.retrieve(
-            data["id"],
-            expand=["items.data.price"]
-        )
-    except Exception as e:
-        logger.exception(
-            f"Failed to retrieve subscription {data.get('id')}: {e}"
-        )
-        subscription = data  # fallback
-
-    # ------------------------------------------------------------------
-    # Resolve tenant + plan
-    # ------------------------------------------------------------------
-    metadata = subscription.get("metadata", {})
+    metadata = data.get("metadata", {})
     tenant_slug = metadata.get("tenant_slug")
     plan_id = metadata.get("plan_id")
 
     if not tenant_slug:
         logger.error("tenant_slug missing in Stripe metadata")
-        return HttpResponse(status=400)
+        return HttpResponse(status=200)
 
     tenant = Tenant.objects.filter(subdomain__iexact=tenant_slug).first()
     if not tenant:
         logger.error(f"Tenant not found: {tenant_slug}")
-        return HttpResponse(status=400)
+        return HttpResponse(status=200)
 
-    plan = (
-        SubscriptionPlan.objects.filter(id=plan_id).first()
-        if plan_id else None
+    plan = SubscriptionPlan.objects.filter(id=plan_id).first() if plan_id else None
+
+    # ----------------------------
+    # Dates (FIXED)
+    # ----------------------------
+    start_ts = data.get("current_period_start") or data.get("start_date")
+    end_ts = data.get("current_period_end")
+
+    start_date = (
+        datetime.fromtimestamp(start_ts, tz=dt_timezone.utc).date()
+        if start_ts else None
     )
 
-    # ------------------------------------------------------------------
-    # Resolve dates (CORRECTLY)
-    # ------------------------------------------------------------------
-    start_ts = (
-        subscription.get("current_period_start")
-        or subscription.get("start_date")
+    end_date = (
+        datetime.fromtimestamp(end_ts, tz=dt_timezone.utc).date()
+        if end_ts else None
     )
 
-    end_ts = derive_end_ts(subscription, start_ts)
-
-    start_date = ts_to_date(start_ts)
-    end_date = ts_to_date(end_ts)
-
-    # ------------------------------------------------------------------
-    # Resolve status
-    # ------------------------------------------------------------------
-    status = subscription.get("status")
-    cancel_at_period_end = subscription.get("cancel_at_period_end", False)
+    status = data.get("status")
+    cancel_at_period_end = data.get("cancel_at_period_end", False)
 
     active = status in ("active", "trialing") and not cancel_at_period_end
 
-    # ------------------------------------------------------------------
-    # Build defaults (DO NOT overwrite with NULLs)
-    # ------------------------------------------------------------------
-    defaults = {
-        "tenant": tenant,
-        "plan": plan,
-        "active": active,
-        "auto_renew": not cancel_at_period_end,
-        "max_users": plan.max_users if plan else 0,
-        "max_dashboards": plan.max_dashboards if plan else 0,
-        "max_datasets": plan.max_datasets if plan else 0,
-        "max_api_rows": plan.max_api_rows if plan else 0,
-        "max_groups": plan.max_groups if plan else 0,
-    }
-
-    if start_date:
-        defaults["start_date"] = start_date
-    if end_date:
-        defaults["end_date"] = end_date
-
-    # ------------------------------------------------------------------
-    # UPSERT subscription (idempotent)
-    # ------------------------------------------------------------------
-    sub_obj, created = TenantSubscription.objects.update_or_create(
-        stripe_subscription_id=subscription["id"],
-        defaults=defaults,
-    )
+    try:
+        subscription, created = TenantSubscription.objects.update_or_create(
+            stripe_subscription_id=data["id"],  # ✅ DO NOT CHANGE THIS
+            defaults={
+                "tenant": tenant,
+                "plan": plan,
+                "start_date": start_date,
+                "end_date": end_date,
+                "active": active,
+                "auto_renew": not cancel_at_period_end,
+                "max_users": plan.max_users if plan else 0,
+                "max_dashboards": plan.max_dashboards if plan else 0,
+                "max_datasets": plan.max_datasets if plan else 0,
+                "max_api_rows": plan.max_api_rows if plan else 0,
+                "max_groups": plan.max_groups if plan else 0,
+            },
+        )
+    except Exception:
+        logger.exception("Failed to save TenantSubscription")
+        return HttpResponse(status=200)
 
     logger.info(
-        f"Subscription synced: tenant={tenant_slug}, "
-        f"created={created}, active={active}, "
-        f"start={start_date}, end={end_date}"
+        f"Subscription {'created' if created else 'updated'} "
+        f"for tenant {tenant_slug}"
     )
 
-    # ------------------------------------------------------------------
-    # Store default payment method
-    # ------------------------------------------------------------------
-    default_pm = subscription.get("default_payment_method")
-
-    if not default_pm:
-        try:
-            customer = stripe.Customer.retrieve(subscription.get("customer"))
-            default_pm = customer.invoice_settings.default_payment_method
-        except Exception:
-            default_pm = None
-
-    if default_pm:
-        billing_user = TenantUser.objects.filter(
-            tenant=tenant,
-            is_superadmin=True,
-        ).first()
-
-        if billing_user:
-            billing_user.default_payment_method_id = default_pm
-            billing_user.save(update_fields=["default_payment_method_id"])
-
-            logger.info(
-                f"Default payment method saved for tenant {tenant_slug}: {default_pm}"
-            )
-
-    # ------------------------------------------------------------------
-    # Always return 200 to Stripe
-    # ------------------------------------------------------------------
     return HttpResponse(status=200)
+
 
 
 @method_decorator(csrf_exempt, name="dispatch")
