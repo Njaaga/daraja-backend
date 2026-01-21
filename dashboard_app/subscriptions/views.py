@@ -31,7 +31,7 @@ class ListPlansView(APIView):
     permission_classes = [AllowAny]
 
     def get(self, request):
-        plans = SubscriptionPlan.objects.all().values("id", "name", "price", "features")
+        plans = SubscriptionPlan.objects.all().values("id", "name", "price")
         return Response(plans)
 
 class CreateStripeCheckoutSession(APIView):
@@ -132,95 +132,137 @@ logger = logging.getLogger(__name__)
 @csrf_exempt
 def stripe_webhook(request):
     if request.method != "POST":
-        return HttpResponse(status=405)
+        return HttpResponse("Method not allowed", status=405)
 
     payload = request.body
     sig_header = request.META.get("HTTP_STRIPE_SIGNATURE")
+    endpoint_secret = getattr(settings, "STRIPE_WEBHOOK_SECRET", None)
 
+    if not endpoint_secret:
+        logger.error("Stripe webhook secret not configured")
+        return HttpResponse("Webhook secret not configured", status=500)
+
+    # Verify the webhook signature
     try:
         event = stripe.Webhook.construct_event(
-            payload,
-            sig_header,
-            settings.STRIPE_WEBHOOK_SECRET,
+            payload=payload, sig_header=sig_header, secret=endpoint_secret
         )
-    except Exception:
-        logger.exception("Stripe webhook verification failed")
+    except ValueError:
+        logger.error("Invalid payload")
         return HttpResponse(status=400)
+    except stripe.error.SignatureVerificationError:
+        logger.error("Invalid signature")
+        return HttpResponse(status=400)
+    except Exception as e:
+        logger.exception(f"Webhook error: {e}")
+        return HttpResponse(status=500)
 
-    event_type = event["type"]
-    data = event["data"]["object"]
+    # Get event type and data
+    event_type = event.get("type")
+    data = event.get("data", {}).get("object", {})
 
-    if event_type not in (
-        "customer.subscription.created",
-        "customer.subscription.updated",
-        "customer.subscription.deleted",
-    ):
-        return HttpResponse(status=200)
+    logger.info(f"Stripe event received: {event_type} for subscription {data.get('id')}")
 
-    metadata = data.get("metadata", {})
-    tenant_slug = metadata.get("tenant_slug")
-    plan_id = metadata.get("plan_id")
+    # Only handle subscription create/update events
+    if event_type in ["customer.subscription.created", "customer.subscription.updated"]:
+        metadata = data.get("metadata", {})
+        tenant_slug = metadata.get("tenant_slug")
+        plan_id = metadata.get("plan_id")
 
-    if not tenant_slug:
-        logger.error("tenant_slug missing in Stripe metadata")
-        return HttpResponse(status=200)
+        if not tenant_slug:
+            logger.error("Tenant slug missing in metadata")
+            return HttpResponse(status=400)
 
-    tenant = Tenant.objects.filter(subdomain__iexact=tenant_slug).first()
-    if not tenant:
-        logger.error(f"Tenant not found: {tenant_slug}")
-        return HttpResponse(status=200)
+        tenant = Tenant.objects.filter(subdomain__iexact=tenant_slug).first()
+        if not tenant:
+            logger.error(f"Tenant not found: {tenant_slug}")
+            return HttpResponse(status=400)
 
-    plan = SubscriptionPlan.objects.filter(id=plan_id).first() if plan_id else None
+        plan = SubscriptionPlan.objects.filter(id=plan_id).first() if plan_id else None
+        if plan_id and not plan:
+            logger.warning(f"Plan not found for id {plan_id}. Continuing without plan.")
 
-    # ----------------------------
-    # Dates (FIXED)
-    # ----------------------------
-    start_ts = data.get("current_period_start") or data.get("start_date")
-    end_ts = data.get("current_period_end")
+        # Get first subscription item
+        items = data.get("items", {}).get("data", [])
+        if not items:
+            logger.warning("No subscription items found, skipping")
+            return HttpResponse(status=200)
 
-    start_date = (
-        datetime.fromtimestamp(start_ts, tz=dt_timezone.utc).date()
-        if start_ts else None
-    )
+        item = items[0]
+        start_ts = item.get("current_period_start")
+        end_ts = item.get("current_period_end")
 
-    end_date = (
-        datetime.fromtimestamp(end_ts, tz=dt_timezone.utc).date()
-        if end_ts else None
-    )
+        start_date = datetime.fromtimestamp(start_ts, tz=dt_timezone.utc).date() if start_ts else None
+        end_date = datetime.fromtimestamp(end_ts, tz=dt_timezone.utc).date() if end_ts else None
 
-    status = data.get("status")
-    cancel_at_period_end = data.get("cancel_at_period_end", False)
+        active = data.get("status") == "active" and not data.get("cancel_at_period_end", False)
 
-    active = status in ("active", "trialing") and not cancel_at_period_end
+        try:
+            sub, created = TenantSubscription.objects.update_or_create(
+                stripe_subscription_id=data.get("id"),
+                defaults={
+                    "tenant": tenant,
+                    "plan": plan,
+                    "start_date": start_date,
+                    "end_date": end_date,
+                    "active": active,
+                    "auto_renew": not data.get("cancel_at_period_end", False),
+                    "max_api_rows": plan.max_api_rows if plan else 0,
+                    "max_dashboards": plan.max_dashboards if plan else 0,
+                    "max_datasets": plan.max_datasets if plan else 0,
+                    "max_users": plan.max_users if plan else 0,
+                    "max_groups": plan.max_groups if plan else 0,
+                }
+            )
+            logger.info(f"Subscription {'created' if created else 'updated'} for tenant {tenant_slug}")
+        except Exception as e:
+            logger.exception(f"Failed to save subscription: {e}")
+            return HttpResponse(status=500)
 
-    try:
-        subscription, created = TenantSubscription.objects.update_or_create(
-            stripe_subscription_id=data["id"],  # ✅ DO NOT CHANGE THIS
-            defaults={
-                "tenant": tenant,
-                "plan": plan,
-                "start_date": start_date,
-                "end_date": end_date,
-                "active": active,
-                "auto_renew": not cancel_at_period_end,
-                "max_users": plan.max_users if plan else 0,
-                "max_dashboards": plan.max_dashboards if plan else 0,
-                "max_datasets": plan.max_datasets if plan else 0,
-                "max_api_rows": plan.max_api_rows if plan else 0,
-                "max_groups": plan.max_groups if plan else 0,
-            },
-        )
-    except Exception:
-        logger.exception("Failed to save TenantSubscription")
-        return HttpResponse(status=200)
-
-    logger.info(
-        f"Subscription {'created' if created else 'updated'} "
-        f"for tenant {tenant_slug}"
-    )
-
+    # Always return 200 to Stripe if we handled it
     return HttpResponse(status=200)
 
+
+@method_decorator(csrf_exempt, name="dispatch")
+class StripeConfirmPayment(APIView):
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        session_id = request.data.get("session_id")
+        tenant_subdomain = request.data.get("tenant_subdomain")
+        if not session_id or not tenant_subdomain:
+            return Response({"error": "Missing session_id or tenant_subdomain"}, status=400)
+
+        try:
+            session = stripe.checkout.Session.retrieve(session_id)
+        except stripe.error.InvalidRequestError:
+            return Response({"error": "Invalid Stripe session ID."}, status=400)
+
+        try:
+            tenant = Tenant.objects.get(subdomain=tenant_subdomain)
+            sub = TenantSubscription.objects.filter(tenant=tenant).first()
+            if sub:
+                plan = sub.plan
+                return Response({
+                    "status": "success",
+                    "current_plan": {
+                        "id": plan.id if plan else None,
+                        "name": plan.name if plan else None,
+                        "price": plan.price if plan else None,
+                        "start_date": sub.start_date,
+                        "end_date": sub.end_date,
+                        "active": sub.active,
+                        "auto_renew": sub.auto_renew,
+                        "max_users": sub.max_users,
+                        "max_dashboards": sub.max_dashboards,
+                        "max_datasets": sub.max_datasets,
+                        "max_api_rows": sub.max_api_rows,
+                    }
+                })
+        except Tenant.DoesNotExist:
+            return Response({"error": "Tenant not found."}, status=404)
+
+        return Response({"status": "pending"})
 
 
 class SubscriptionStatusView(APIView):
