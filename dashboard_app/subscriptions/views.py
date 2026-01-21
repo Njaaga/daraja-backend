@@ -129,6 +129,37 @@ logger = logging.getLogger(__name__)
 
 
 
+def derive_end_date(start_ts, data):
+    """
+    Stripe does not always send current_period_end on creation.
+    Derive it safely from the price interval.
+    """
+    try:
+        items = data.get("items", {}).get("data", [])
+        if not items:
+            return None
+
+        price = items[0].get("price", {})
+        recurring = price.get("recurring", {})
+
+        interval = recurring.get("interval")
+        interval_count = recurring.get("interval_count", 1)
+
+        start_date = datetime.fromtimestamp(
+            start_ts, tz=dt_timezone.utc
+        ).date()
+
+        if interval == "month":
+            return start_date + timedelta(days=30 * interval_count)
+        if interval == "year":
+            return start_date + timedelta(days=365 * interval_count)
+
+    except Exception:
+        logger.exception("Failed to derive subscription end date")
+
+    return None
+
+
 @csrf_exempt
 def stripe_webhook(request):
     if request.method != "POST":
@@ -144,12 +175,13 @@ def stripe_webhook(request):
             settings.STRIPE_WEBHOOK_SECRET,
         )
     except Exception:
-        logger.exception("Stripe webhook verification failed")
+        logger.exception("Stripe webhook signature verification failed")
         return HttpResponse(status=400)
 
     event_type = event["type"]
     data = event["data"]["object"]
 
+    # Only care about subscription lifecycle
     if event_type not in (
         "customer.subscription.created",
         "customer.subscription.updated",
@@ -165,16 +197,19 @@ def stripe_webhook(request):
         logger.error("tenant_slug missing in Stripe metadata")
         return HttpResponse(status=200)
 
-    tenant = Tenant.objects.filter(subdomain__iexact=tenant_slug).first()
+    tenant = Tenant.objects.filter(
+        subdomain__iexact=tenant_slug
+    ).first()
+
     if not tenant:
         logger.error(f"Tenant not found: {tenant_slug}")
         return HttpResponse(status=200)
 
     plan = SubscriptionPlan.objects.filter(id=plan_id).first() if plan_id else None
 
-    # ----------------------------
-    # Dates (FIXED)
-    # ----------------------------
+    # ------------------------------------------------------------------
+    # Dates (Stripe-correct handling)
+    # ------------------------------------------------------------------
     start_ts = data.get("current_period_start") or data.get("start_date")
     end_ts = data.get("current_period_end")
 
@@ -183,19 +218,27 @@ def stripe_webhook(request):
         if start_ts else None
     )
 
-    end_date = (
-        datetime.fromtimestamp(end_ts, tz=dt_timezone.utc).date()
-        if end_ts else None
-    )
+    if end_ts:
+        end_date = datetime.fromtimestamp(
+            end_ts, tz=dt_timezone.utc
+        ).date()
+    else:
+        end_date = derive_end_date(start_ts, data)
 
+    # ------------------------------------------------------------------
+    # Subscription state
+    # ------------------------------------------------------------------
     status = data.get("status")
     cancel_at_period_end = data.get("cancel_at_period_end", False)
 
     active = status in ("active", "trialing") and not cancel_at_period_end
 
+    # ------------------------------------------------------------------
+    # Save subscription (IDEMPOTENT)
+    # ------------------------------------------------------------------
     try:
         subscription, created = TenantSubscription.objects.update_or_create(
-            stripe_subscription_id=data["id"],  # ✅ DO NOT CHANGE THIS
+            stripe_subscription_id=data["id"],  # 🔑 DO NOT CHANGE
             defaults={
                 "tenant": tenant,
                 "plan": plan,
@@ -216,53 +259,33 @@ def stripe_webhook(request):
 
     logger.info(
         f"Subscription {'created' if created else 'updated'} "
-        f"for tenant {tenant_slug}"
+        f"for tenant {tenant_slug} "
+        f"(start={start_date}, end={end_date})"
     )
 
+    # ------------------------------------------------------------------
+    # Store default payment method (best effort)
+    # ------------------------------------------------------------------
+    try:
+        default_pm = data.get("default_payment_method")
+
+        if not default_pm:
+            customer = stripe.Customer.retrieve(data.get("customer"))
+            default_pm = customer.invoice_settings.default_payment_method
+
+        if default_pm:
+            billing_user = TenantUser.objects.filter(
+                tenant=tenant,
+                is_superadmin=True,
+            ).first()
+
+            if billing_user:
+                billing_user.default_payment_method_id = default_pm
+                billing_user.save(update_fields=["default_payment_method_id"])
+    except Exception:
+        logger.exception("Failed to store default payment method")
+
     return HttpResponse(status=200)
-
-
-
-@method_decorator(csrf_exempt, name="dispatch")
-class StripeConfirmPayment(APIView):
-    permission_classes = [AllowAny]
-
-    def post(self, request):
-        session_id = request.data.get("session_id")
-        tenant_subdomain = request.data.get("tenant_subdomain")
-        if not session_id or not tenant_subdomain:
-            return Response({"error": "Missing session_id or tenant_subdomain"}, status=400)
-
-        try:
-            session = stripe.checkout.Session.retrieve(session_id)
-        except stripe.error.InvalidRequestError:
-            return Response({"error": "Invalid Stripe session ID."}, status=400)
-
-        try:
-            tenant = Tenant.objects.get(subdomain=tenant_subdomain)
-            sub = TenantSubscription.objects.filter(tenant=tenant).first()
-            if sub:
-                plan = sub.plan
-                return Response({
-                    "status": "success",
-                    "current_plan": {
-                        "id": plan.id if plan else None,
-                        "name": plan.name if plan else None,
-                        "price": plan.price if plan else None,
-                        "start_date": sub.start_date,
-                        "end_date": sub.end_date,
-                        "active": sub.active,
-                        "auto_renew": sub.auto_renew,
-                        "max_users": sub.max_users,
-                        "max_dashboards": sub.max_dashboards,
-                        "max_datasets": sub.max_datasets,
-                        "max_api_rows": sub.max_api_rows,
-                    }
-                })
-        except Tenant.DoesNotExist:
-            return Response({"error": "Tenant not found."}, status=404)
-
-        return Response({"status": "pending"})
 
 
 class SubscriptionStatusView(APIView):
