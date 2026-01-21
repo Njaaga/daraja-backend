@@ -311,51 +311,50 @@ class CancelSubscriptionView(APIView):
         except TenantSubscription.DoesNotExist:
             return Response({"error": "No subscription found to cancel."}, status=404)
 
-        if sub.stripe_subscription_id:
-            try:
-                # Retrieve current Stripe subscription
-                stripe_sub = stripe.Subscription.retrieve(sub.stripe_subscription_id)
-                status = stripe_sub.status
-
-                if status in ['active', 'trialing']:
-                    # Cancel at period end
-                    stripe.Subscription.modify(
-                        sub.stripe_subscription_id,
-                        cancel_at_period_end=True
-                    )
-                    sub.auto_renew = False
-                    sub.save()
-                    return Response({
-                        "status": "success",
-                        "message": "Subscription will be canceled at the end of the current period."
-                    })
-                else:
-                    # Subscription not active; mark inactive immediately
-                    sub.active = False
-                    sub.auto_renew = False
-                    sub.end_date = timezone.now()
-                    sub.save()
-                    return Response({
-                        "status": "success",
-                        "message": f"Subscription is {status}, canceled locally."
-                    })
-
-            except stripe.error.StripeError as e:
-                print("🔥 Stripe error:", e)
-                return Response({"error": f"Stripe error: {str(e)}"}, status=500)
-            except Exception as e:
-                print("🔥 Cancel subscription error:", e)
-                return Response({"error": str(e)}, status=500)
-        else:
-            # No Stripe subscription ID, cancel locally
+        if not sub.stripe_subscription_id:
             sub.active = False
             sub.auto_renew = False
-            sub.end_date = timezone.now()
             sub.save()
             return Response({
                 "status": "success",
                 "message": "Subscription canceled locally."
             })
+
+        try:
+            stripe_sub = stripe.Subscription.retrieve(sub.stripe_subscription_id)
+            status = stripe_sub.status
+
+            if status in ['active', 'trialing']:
+                # Cancel at period end (correct behavior)
+                stripe.Subscription.modify(
+                    sub.stripe_subscription_id,
+                    cancel_at_period_end=True
+                )
+
+                sub.auto_renew = False
+                sub.save()
+
+                return Response({
+                    "status": "success",
+                    "message": "Subscription will be canceled at the end of the current period."
+                })
+
+            else:
+                # Already canceled or expired, mark locally inactive
+                sub.active = False
+                sub.auto_renew = False
+                sub.save()
+
+                return Response({
+                    "status": "success",
+                    "message": f"Subscription is {status}, canceled locally."
+                })
+
+        except stripe.error.StripeError as e:
+            return Response({"error": f"Stripe error: {str(e)}"}, status=500)
+        except Exception as e:
+            return Response({"error": str(e)}, status=500)
+
         
 
 class ToggleAutoRenewView(APIView):
