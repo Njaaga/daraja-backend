@@ -129,6 +129,12 @@ logger = logging.getLogger(__name__)
 
 
 
+def ts_to_date(ts):
+    if not ts:
+        return None
+    return datetime.fromtimestamp(ts, tz=dt_timezone.utc).date()
+
+
 @csrf_exempt
 def stripe_webhook(request):
     if request.method != "POST":
@@ -158,7 +164,7 @@ def stripe_webhook(request):
         logger.error("Invalid Stripe signature")
         return HttpResponse(status=400)
     except Exception as e:
-        logger.exception(f"Webhook error: {e}")
+        logger.exception(f"Stripe webhook error: {e}")
         return HttpResponse(status=500)
 
     event_type = event["type"]
@@ -169,94 +175,115 @@ def stripe_webhook(request):
     # ------------------------------------------------------------------
     # Handle subscription lifecycle events
     # ------------------------------------------------------------------
-    if event_type in (
+    if event_type not in (
         "customer.subscription.created",
         "customer.subscription.updated",
         "customer.subscription.deleted",
     ):
-        metadata = data.get("metadata", {})
-        tenant_slug = metadata.get("tenant_slug")
-        plan_id = metadata.get("plan_id")
+        return HttpResponse(status=200)
 
-        if not tenant_slug:
-            logger.error("tenant_slug missing in Stripe metadata")
-            return HttpResponse(status=400)
-
-        tenant = Tenant.objects.filter(subdomain__iexact=tenant_slug).first()
-        if not tenant:
-            logger.error(f"Tenant not found: {tenant_slug}")
-            return HttpResponse(status=400)
-
-        plan = SubscriptionPlan.objects.filter(id=plan_id).first() if plan_id else None
-
-        # ------------------------------------------------------------------
-        # Resolve subscription dates
-        # ------------------------------------------------------------------
-        start_ts = data.get("current_period_start")
-        end_ts = data.get("current_period_end")
-
-        start_date = (
-            datetime.fromtimestamp(start_ts, tz=dt_timezone.utc).date()
-            if start_ts else None
+    # ------------------------------------------------------------------
+    # Retrieve full subscription (Stripe best practice)
+    # ------------------------------------------------------------------
+    try:
+        subscription = stripe.Subscription.retrieve(data["id"])
+    except Exception as e:
+        logger.exception(
+            f"Failed to retrieve full subscription {data.get('id')}: {e}"
         )
-        end_date = (
-            datetime.fromtimestamp(end_ts, tz=dt_timezone.utc).date()
-            if end_ts else None
-        )
+        subscription = data  # fallback to partial payload
 
-        active = (
-            data.get("status") in ("active", "trialing")
-            and not data.get("cancel_at_period_end", False)
-        )
+    metadata = subscription.get("metadata", {})
+    tenant_slug = metadata.get("tenant_slug")
+    plan_id = metadata.get("plan_id")
 
-        # ------------------------------------------------------------------
-        # UPSERT TenantSubscription (idempotent)
-        # ------------------------------------------------------------------
-        subscription, _ = TenantSubscription.objects.update_or_create(
-            stripe_subscription_id=data["id"],
-            defaults={
-                "tenant": tenant,
-                "plan": plan,
-                "start_date": start_date,
-                "end_date": end_date,
-                "active": active,
-                "auto_renew": not data.get("cancel_at_period_end", False),
-                "max_users": plan.max_users if plan else 0,
-                "max_dashboards": plan.max_dashboards if plan else 0,
-                "max_datasets": plan.max_datasets if plan else 0,
-                "max_api_rows": plan.max_api_rows if plan else 0,
-                "max_groups": plan.max_groups if plan else 0,
-            },
-        )
+    if not tenant_slug:
+        logger.error("tenant_slug missing in Stripe metadata")
+        return HttpResponse(status=400)
 
-        logger.info(f"Subscription synced for tenant {tenant_slug}")
+    tenant = Tenant.objects.filter(subdomain__iexact=tenant_slug).first()
+    if not tenant:
+        logger.error(f"Tenant not found: {tenant_slug}")
+        return HttpResponse(status=400)
 
-        # ------------------------------------------------------------------
-        # 🔑 STORE DEFAULT PAYMENT METHOD
-        # ------------------------------------------------------------------
-        default_pm = data.get("default_payment_method")
+    plan = (
+        SubscriptionPlan.objects.filter(id=plan_id).first()
+        if plan_id else None
+    )
 
-        # Fallback to customer default if missing
-        if not default_pm:
-            customer_id = data.get("customer")
-            try:
-                customer = stripe.Customer.retrieve(customer_id)
-                default_pm = customer.invoice_settings.default_payment_method
-            except Exception:
-                default_pm = None
+    # ------------------------------------------------------------------
+    # Resolve subscription dates (SAFE)
+    # ------------------------------------------------------------------
+    start_date = ts_to_date(
+        subscription.get("current_period_start")
+        or subscription.get("start_date")
+    )
+    end_date = ts_to_date(subscription.get("current_period_end"))
 
-        if default_pm:
-            billing_user = TenantUser.objects.filter(
-                tenant=tenant,
-                is_superadmin=True,
-            ).first()
+    status = subscription.get("status")
+    cancel_at_period_end = subscription.get("cancel_at_period_end", False)
 
-            if billing_user:
-                billing_user.default_payment_method_id = default_pm
-                billing_user.save(update_fields=["default_payment_method_id"])
-                logger.info(
-                    f"Default PM saved for tenant {tenant_slug}: {default_pm}"
-                )
+    active = status in ("active", "trialing") and not cancel_at_period_end
+
+    # ------------------------------------------------------------------
+    # Build defaults WITHOUT overwriting valid dates
+    # ------------------------------------------------------------------
+    defaults = {
+        "tenant": tenant,
+        "plan": plan,
+        "active": active,
+        "auto_renew": not cancel_at_period_end,
+        "max_users": plan.max_users if plan else 0,
+        "max_dashboards": plan.max_dashboards if plan else 0,
+        "max_datasets": plan.max_datasets if plan else 0,
+        "max_api_rows": plan.max_api_rows if plan else 0,
+        "max_groups": plan.max_groups if plan else 0,
+    }
+
+    if start_date:
+        defaults["start_date"] = start_date
+    if end_date:
+        defaults["end_date"] = end_date
+
+    # ------------------------------------------------------------------
+    # UPSERT TenantSubscription (idempotent)
+    # ------------------------------------------------------------------
+    subscription_obj, created = TenantSubscription.objects.update_or_create(
+        stripe_subscription_id=subscription["id"],
+        defaults=defaults,
+    )
+
+    logger.info(
+        f"Subscription synced for tenant={tenant_slug} "
+        f"(created={created}, active={active})"
+    )
+
+    # ------------------------------------------------------------------
+    # Store default payment method
+    # ------------------------------------------------------------------
+    default_pm = subscription.get("default_payment_method")
+
+    if not default_pm:
+        customer_id = subscription.get("customer")
+        try:
+            customer = stripe.Customer.retrieve(customer_id)
+            default_pm = customer.invoice_settings.default_payment_method
+        except Exception:
+            default_pm = None
+
+    if default_pm:
+        billing_user = TenantUser.objects.filter(
+            tenant=tenant,
+            is_superadmin=True,
+        ).first()
+
+        if billing_user:
+            billing_user.default_payment_method_id = default_pm
+            billing_user.save(update_fields=["default_payment_method_id"])
+
+            logger.info(
+                f"Default payment method saved for tenant {tenant_slug}: {default_pm}"
+            )
 
     # ------------------------------------------------------------------
     # Always return 200 to Stripe
