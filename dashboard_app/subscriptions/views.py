@@ -206,7 +206,7 @@ def stripe_webhook(request):
                     "start_date": start_date,
                     "end_date": end_date,
                     "active": active,
-                    "auto_renew": not cancel_at_period_end,
+                    "auto_renew": not data.get("cancel_at_period_end", False),
                     "max_api_rows": plan.max_api_rows if plan else 0,
                     "max_dashboards": plan.max_dashboards if plan else 0,
                     "max_datasets": plan.max_datasets if plan else 0,
