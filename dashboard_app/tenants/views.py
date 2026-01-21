@@ -33,7 +33,7 @@ def build_frontend_url(request, path: str) -> str:
     - https://reporting.darajatechnologies.ca/verify-email
     """
 
-    frontend_domain = getattr(settings, "FRONTENT_URL", None)
+    frontend_domain = getattr(settings, "FRONTEND_URL", None)
 
     if not frontend_domain:
         raise RuntimeError("FRONTENT_URL is not set in settings")
