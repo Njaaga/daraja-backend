@@ -38,8 +38,6 @@ def build_frontend_url(request, path: str) -> str:
     if not frontend_domain:
         raise RuntimeError("FRONTEND_URL is not set in settings")
 
-    protocol = "http" if settings.DEBUG else "https"
-
     return f"{frontend_domain}{path}"
 
 
