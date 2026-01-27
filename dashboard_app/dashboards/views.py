@@ -1117,6 +1117,48 @@ class DashboardViewSet(viewsets.ModelViewSet):
             },
             status=status.HTTP_200_OK
         )
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def support_request(request):
+    user = request.user
+    tenant = get_current_tenant()
+
+    name = request.data.get("name")
+    email = request.data.get("email")
+    message = request.data.get("message")
+
+    if not message:
+        return Response(
+            {"error": "Message is required"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    subject = f"Support request from {name or user.email}"
+
+    body = f"""
+Support Request
+
+Tenant: {tenant.name if tenant else "N/A"}
+User: {user.email}
+Name: {name}
+Email: {email}
+
+Message:
+{message}
+"""
+
+    send_mail(
+        subject=subject,
+        message=body,
+        from_email=settings.DEFAULT_FROM_EMAIL,
+        recipient_list=["support@darajatechnologies.ca"],  # where YOU receive it
+        reply_to=[email or user.email],
+        fail_silently=False,
+    )
+
+    return Response({"success": True})
     
 
 
