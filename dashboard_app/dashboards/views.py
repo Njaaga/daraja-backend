@@ -488,19 +488,29 @@ class GroupViewSet(viewsets.ModelViewSet):
         tenant = get_current_tenant()
         if not tenant:
             return Group.objects.none()
-
+    
+        user = self.request.user
+    
         qs = Group.objects.filter(tenant=tenant)
-
+    
         # Allow restore & hard delete to access deleted records
         if self.action in ["restore", "hard_delete"]:
             return qs
-
-        # Recycle bin view
+    
+        # Recycle bin view (admins only, implicitly)
         if self.request.query_params.get("recycle") == "true":
             return qs.filter(is_deleted=True)
-
+    
         # Default: active only
-        return qs.filter(is_deleted=False)
+        qs = qs.filter(is_deleted=False)
+    
+        # 🔐 ROLE-BASED FILTERING
+        if user.is_superuser or user.is_staff:
+            return qs
+    
+        # 👤 Normal users → only groups they are assigned to
+        return qs.filter(users=user)
+
 
 
 
