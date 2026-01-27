@@ -1149,16 +1149,24 @@ Message:
 {message}
 """
 
+import logging
+
+try:
     send_mail(
         subject=subject,
         message=body,
         from_email=settings.DEFAULT_FROM_EMAIL,
-        recipient_list=["support@darajatechnologies.ca"],  # where YOU receive it
+        recipient_list=["support@darajatechnologies.ca"],
         reply_to=[email or user.email],
         fail_silently=False,
     )
+except Exception as e:
+    logging.exception("Support email failed")
+    return Response(
+        {"error": "Failed to send support request"},
+        status=500,
+    )
 
-    return Response({"success": True})
     
 
 
