@@ -1160,12 +1160,13 @@ Message:
             reply_to=[email or user.email],
             fail_silently=False,
         )
-    except Exception:
+    except Exception as e:
         logging.exception("Support email failed")
         return Response(
-            {"error": "Failed to send support request"},
+            {"error": str(e)},
             status=status.HTTP_500_INTERNAL_SERVER_ERROR,
         )
+
 
     return Response({"success": True})
 
