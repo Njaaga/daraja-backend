@@ -1130,45 +1130,38 @@ def support_request(request):
     message = request.data.get("message")
 
     if not message:
-        return Response(
-            {"error": "Message is required"},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
-
-    tenant_name = getattr(tenant, "name", "N/A")
+        return Response({"error": "Message is required"}, status=status.HTTP_400_BAD_REQUEST)
 
     subject = f"Support request from {name or user.email}"
 
     body = f"""
 Support Request
 
-Tenant: {tenant_name}
+Tenant: {tenant.name if tenant else "N/A"}
 User: {user.email}
 Name: {name}
-Email: {email or user.email}
+Email: {email}
 
 Message:
 {message}
 """
 
     try:
-        send_mail(
+        email_msg = EmailMessage(
             subject=subject,
-            message=body,
+            body=body,
             from_email=settings.DEFAULT_FROM_EMAIL,
-            recipient_list=["support@darajatechnologies.ca"],
+            to=["support@darajatechnologies.ca"],
             reply_to=[email or user.email],
-            fail_silently=False,
         )
+        email_msg.send(fail_silently=False)
+
     except Exception as e:
         logging.exception("Support email failed")
-        return Response(
-            {"error": str(e)},
-            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
-        )
-
+        return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
     return Response({"success": True})
+
 
     
 
