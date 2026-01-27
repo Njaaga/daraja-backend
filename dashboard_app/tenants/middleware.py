@@ -26,6 +26,8 @@ class TenantMiddleware:
         "/api/set-password/",
         "/api/set-password",
         "/api/users/set-password/",
+        "/api/support",
+        "/api/support/",
     )
 
     def __init__(self, get_response):
