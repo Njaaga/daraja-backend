@@ -207,14 +207,15 @@ def stripe_webhook(request):
         end_ts = data.get("current_period_end")
 
         start_date = (
-            datetime.fromtimestamp(start_ts, tz=dt_timezone.utc).date()
+            datetime.fromtimestamp(start_ts, tz=dt_timezone.utc)
             if start_ts else None
         )
+        
+        end_date = (
+            datetime.fromtimestamp(end_ts, tz=dt_timezone.utc)
+            if end_ts else derive_end_date(start_ts, data)
+        )
 
-        if end_ts:
-            end_date = datetime.fromtimestamp(end_ts, tz=dt_timezone.utc).date()
-        else:
-            end_date = derive_end_date(start_ts, data)
 
         # --- ACTIVE LOGIC ---
         status = data.get("status")
