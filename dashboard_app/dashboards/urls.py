@@ -12,6 +12,7 @@ from .views import (
     CurrentUserView,
     ForgotPasswordView,
     ResetPasswordView,
+    support_request
 )
 
 from django.contrib.auth import views as auth_views
@@ -39,6 +40,8 @@ urlpatterns = [
     path("forgot-password/", ForgotPasswordView.as_view(), name="forgot-password"),
 
     path("reset-password/", ResetPasswordView.as_view(), name="reset-password"),
+
+    path("support/", support_request),
 
     # =========================================================
     # PUBLIC ENDPOINT (NO AUTH REQUIRED)
