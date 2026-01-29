@@ -1177,22 +1177,27 @@ Message:
 @api_view(["POST"])
 @permission_classes([AllowAny])
 def support_guest(request):
-
-    name = request.data.get("name")
-    email = request.data.get("email")
-    message = request.data.get("message")
+    """
+    Handle guest support requests from frontend.
+    Expects JSON: { name, email, message }
+    """
+    data = request.data
+    name = data.get("name", "Guest")
+    email = data.get("email", "")
+    message = data.get("message", "").strip()
 
     if not message:
         return Response({"error": "Message is required"}, status=status.HTTP_400_BAD_REQUEST)
 
-    subject = f"Support request from {name or user.email}"
+    # Use guest fallback if email not provided
+    reply_to_email = email if email else settings.DEFAULT_FROM_EMAIL
 
+    subject = f"Support request from {name}"
     body = f"""
 Support Request
 
-User: {user.email}
 Name: {name}
-Email: {email}
+Email: {email or 'N/A'}
 
 Message:
 {message}
@@ -1204,13 +1209,13 @@ Message:
             body=body,
             from_email=settings.DEFAULT_FROM_EMAIL,
             to=["support@darajatechnologies.ca"],
-            reply_to=[email or user.email],
+            reply_to=[reply_to_email],
         )
         email_msg.send(fail_silently=False)
 
     except Exception as e:
         logging.exception("Support email failed")
-        return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        return Response({"error": "Failed to send support email"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
     return Response({"success": True})
 
