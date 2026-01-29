@@ -30,6 +30,8 @@ class TenantMiddleware:
         "/api/support/",
         "/api/support-guest",
         "/api/support-guest/",
+        "api/subscription/usage",
+        "api/subscription/usage/",
     )
 
     def __init__(self, get_response):
