@@ -1134,24 +1134,37 @@ class DashboardViewSet(viewsets.ModelViewSet):
 @permission_classes([IsAuthenticated])
 def support_request(request):
     user = request.user
+
     tenant = get_current_tenant()
+    if not tenant:
+        tenant_user = (
+            TenantUser.objects
+            .filter(user=user)
+            .select_related("tenant")
+            .first()
+        )
+        tenant = tenant_user.tenant if tenant_user else None
 
     name = request.data.get("name")
     email = request.data.get("email")
     message = request.data.get("message")
 
     if not message:
-        return Response({"error": "Message is required"}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(
+            {"error": "Message is required"},
+            status=status.HTTP_400_BAD_REQUEST
+        )
 
     subject = f"Support request from {name or user.email}"
 
     body = f"""
 Support Request
 
-Tenant: {tenant if tenant else "N/A"}
+Tenant: {tenant.name if tenant else "N/A"}
+Tenant ID: {tenant.id if tenant else "N/A"}
 User: {user.email}
-Name: {name}
-Email: {email}
+Name: {name or "N/A"}
+Email: {email or user.email}
 
 Message:
 {message}
@@ -1169,9 +1182,13 @@ Message:
 
     except Exception as e:
         logging.exception("Support email failed")
-        return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        return Response(
+            {"error": "Failed to send support email"},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
 
     return Response({"success": True})
+
 
 
 @api_view(["POST"])
