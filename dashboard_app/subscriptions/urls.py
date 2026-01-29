@@ -32,4 +32,6 @@ urlpatterns = [
     path("change-plan/", views.CreateSubscriptionWithSavedCardView.as_view(), name="change-plan"),
 
     path("delete-payment-method/", views.DeletePaymentMethod.as_view(), name="delete-payment-method"),
+
+    path("usage/", SubscriptionUsageView.as_view(), name="subscription-usage"),
 ]
