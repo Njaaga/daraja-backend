@@ -70,6 +70,8 @@ class SubscriptionEnforcementMiddleware(MiddlewareMixin):
         "/api/reset-password/",
         "/api/support",
         "/api/support/",
+        "/api/support-guest",
+        "/api/support-guest/",
     ]
 
     def process_request(self, request):
