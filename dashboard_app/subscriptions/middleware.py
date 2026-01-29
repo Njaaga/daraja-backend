@@ -72,6 +72,8 @@ class SubscriptionEnforcementMiddleware(MiddlewareMixin):
         "/api/support/",
         "/api/support-guest",
         "/api/support-guest/",
+        "api/subscription/usage",
+        "api/subscription/usage/",
     ]
 
     def process_request(self, request):
