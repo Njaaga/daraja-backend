@@ -1148,7 +1148,7 @@ def support_request(request):
     body = f"""
 Support Request
 
-Tenant: {tenant.name if tenant else "N/A"}
+Tenant: {tenant if tenant else "N/A"}
 User: {user.email}
 Name: {name}
 Email: {email}
