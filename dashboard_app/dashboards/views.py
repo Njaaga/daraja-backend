@@ -1177,8 +1177,6 @@ Message:
 @api_view(["POST"])
 @permission_classes([AllowAny])
 def support_guest(request):
-    user = request.user
-    tenant = get_current_tenant()
 
     name = request.data.get("name")
     email = request.data.get("email")
@@ -1192,7 +1190,6 @@ def support_guest(request):
     body = f"""
 Support Request
 
-Tenant: {tenant.name if tenant else "N/A"}
 User: {user.email}
 Name: {name}
 Email: {email}
