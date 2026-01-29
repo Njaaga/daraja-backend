@@ -711,3 +711,35 @@ class DeletePaymentMethod(APIView):
             return Response({"error": str(e)}, status=400)
 
 
+class TenantUsageView(APIView):
+    """
+    Returns current usage for the tenant along with subscription limits
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        tenant = get_current_tenant()
+        if not tenant:
+            return Response({"error": "Tenant not found"}, status=404)
+
+        sub = TenantSubscription.objects.filter(tenant=tenant, active=True).first()
+        limits = {
+            "datasets": sub.max_datasets if sub else None,
+            "api_rows": sub.max_api_rows if sub else None,
+            "users": sub.max_users if sub else None,
+            "groups": sub.max_groups if sub else None,
+            "dashboards": sub.max_dashboards if sub else None,
+        }
+
+        # Count actual usage
+        usage = {
+            "datasets": Dataset.objects.filter(tenant=tenant).count(),
+            "api_rows": ApiSource.objects.filter(tenant=tenant).aggregate(
+                total_rows=Sum("row_count")
+            )["total_rows"] or 0,
+            "users": TenantUser.objects.filter(tenant=tenant).count(),
+            "groups": Group.objects.filter(tenant=tenant).count(),
+            "dashboards": Dashboard.objects.filter(tenant=tenant).count(),
+        }
+
+        return Response({"usage": usage, "limits": limits})
