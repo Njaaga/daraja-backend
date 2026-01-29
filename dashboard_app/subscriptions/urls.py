@@ -33,5 +33,5 @@ urlpatterns = [
 
     path("delete-payment-method/", views.DeletePaymentMethod.as_view(), name="delete-payment-method"),
 
-    path("usage/", SubscriptionUsageView.as_view(), name="subscription-usage"),
+    path("usage/", views.SubscriptionUsageView.as_view(), name="subscription-usage"),
 ]
