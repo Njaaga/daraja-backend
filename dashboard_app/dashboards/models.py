@@ -141,6 +141,11 @@ class Chart(models.Model):
     def __str__(self):
         return self.name
 
+JOIN_TYPE_CHOICES = [
+    ("inner", "Inner"),
+    ("left", "Left"),
+    ("right", "Right"),
+]
 
 class ChartJoin(models.Model):
     chart = models.ForeignKey(
