@@ -805,7 +805,17 @@ class DatasetRunAdhocView(APIView):
 
     def post(self, request):
         """
-        Body: { api_source: <id>, endpoint: "/path", query_params: {..} }
+        Run a dataset on-the-fly (ad-hoc) with optional field selection and filters.
+
+        Body:
+        {
+            api_source: <id>,
+            endpoint: "/path",
+            query_params: {...},
+            selected_fields: ["month", "sales"],
+            filters: {"sales": {"min": 0, "max": 1000}},
+            logic_rules: [...]
+        }
         """
         data = request.data
         source_id = data.get("api_source")
@@ -821,7 +831,27 @@ class DatasetRunAdhocView(APIView):
         source = get_object_or_404(ApiDataSource, pk=source_id)
         dataset = Dataset(name="__adhoc__", api_source=source, endpoint=endpoint, query_params=params)
 
-        return run_dataset_wicket(dataset)
+        # Run the dataset
+        results = run_dataset_wicket(dataset)
+
+        # Apply optional filters
+        filters = data.get("filters") or {}
+        logic_rules = data.get("logic_rules") or []
+        selected_fields = data.get("selected_fields") or []
+
+        # Filter rows based on filters & logic_rules
+        if filters or logic_rules:
+            from app.charts.utils import apply_logic_and_filters  # you can reuse frontend logic in Python
+            results = apply_logic_and_filters(results, filters, logic_rules)
+
+        # Return only selected fields
+        if selected_fields:
+            results = [
+                {k: v for k, v in row.items() if k in selected_fields}
+                for row in results
+            ]
+
+        return Response({"data": results})
 
 
 def run_dataset_wicket(dataset):
