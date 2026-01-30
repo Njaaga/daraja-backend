@@ -247,6 +247,7 @@ class ChartSerializer(serializers.ModelSerializer):
             "filters",
             "logic_rules",
             "logic_expression",
+            "selected_fields",
             "created_by",
             "created_at",
         ]
