@@ -1,6 +1,7 @@
 from django.db import models
 from django.contrib.auth.models import User
 from django.utils import timezone
+from django.contrib.postgres.fields import ArrayField
 
 
 class ApiDataSource(models.Model):
@@ -106,41 +107,40 @@ class Chart(models.Model):
         ("min", "Min"),
         ("max", "Max"),
         ("count", "Count"),
-        ("none", "None"),   # For table charts with no aggregation
+        ("none", "None"),
     ]
 
-
     aggregation = models.CharField(
-    max_length=50, 
-    choices=AGGREGATION_CHOICES, 
-    default="none"   # prevents null DB violations
+        max_length=50, 
+        choices=AGGREGATION_CHOICES, 
+        default="none"
     )
 
-    
     name = models.CharField(max_length=255)
     dataset = models.ForeignKey(Dataset, on_delete=models.SET_NULL, null=True, blank=True)
     chart_type = models.CharField(max_length=50)
     x_field = models.CharField(max_length=255, null=True, blank=True)
     y_field = models.CharField(max_length=255, null=True, blank=True)
-    aggregation = models.CharField(max_length=50, null=True, blank=True)
     excel_data = models.JSONField(null=True, blank=True)
     
-    # NEW FIELDS
+    # New fields
     filters = models.JSONField(null=True, blank=True)
     logic_rules = models.JSONField(null=True, blank=True)
     logic_expression = models.TextField(null=True, blank=True)
+    joins = models.JSONField(null=True, blank=True)
+
+    selected_fields = ArrayField(
+        models.CharField(max_length=255),
+        blank=True,
+        default=list
+    )  # <-- this will store the fields that should appear in table charts
 
     created_by = models.ForeignKey("auth.User", on_delete=models.SET_NULL, null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     def __str__(self):
         return self.name
-    
-JOIN_TYPE_CHOICES = [
-    ("inner", "Inner"),
-    ("left", "Left"),
-    ("right", "Right"),
-]
+
 
 class ChartJoin(models.Model):
     chart = models.ForeignKey(
