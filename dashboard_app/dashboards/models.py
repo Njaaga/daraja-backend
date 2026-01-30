@@ -92,6 +92,15 @@ class Dataset(models.Model):
 
 
 
+JOIN_TYPE_CHOICES = [
+    ("inner", "Inner"),
+    ("left", "Left"),
+    ("right", "Right"),
+]
+
+# ------------------------------
+# Chart model
+# ------------------------------
 class Chart(models.Model):
     CHART_TYPES = [
         ("bar", "Bar"),
@@ -99,6 +108,9 @@ class Chart(models.Model):
         ("pie", "Pie"),
         ("kpi", "KPI"),
         ("table", "Table"),
+        ("stacked_bar", "Stacked Bar"),
+        ("area", "Area"),
+        ("scatter", "Scatter"),
     ]
 
     AGGREGATION_CHOICES = [
@@ -107,69 +119,49 @@ class Chart(models.Model):
         ("min", "Min"),
         ("max", "Max"),
         ("count", "Count"),
-        ("none", "None"),
+        ("none", "None"),   # For table charts with no aggregation
     ]
 
-    aggregation = models.CharField(
-        max_length=50, 
-        choices=AGGREGATION_CHOICES, 
-        default="none"
-    )
-
     name = models.CharField(max_length=255)
-    dataset = models.ForeignKey(Dataset, on_delete=models.SET_NULL, null=True, blank=True)
-    chart_type = models.CharField(max_length=50)
+    dataset = models.ForeignKey(
+        "Dataset", on_delete=models.SET_NULL, null=True, blank=True
+    )
+    chart_type = models.CharField(max_length=50, choices=CHART_TYPES)
     x_field = models.CharField(max_length=255, null=True, blank=True)
     y_field = models.CharField(max_length=255, null=True, blank=True)
+    aggregation = models.CharField(
+        max_length=50, choices=AGGREGATION_CHOICES, default="none"
+    )
     excel_data = models.JSONField(null=True, blank=True)
-    
-    # New fields
     filters = models.JSONField(null=True, blank=True)
     logic_rules = models.JSONField(null=True, blank=True)
     logic_expression = models.TextField(null=True, blank=True)
-    joins = models.JSONField(null=True, blank=True)
-
-    selected_fields = ArrayField(
-        models.CharField(max_length=255),
-        blank=True,
-        default=list
-    )  # <-- this will store the fields that should appear in table charts
-
-    created_by = models.ForeignKey("auth.User", on_delete=models.SET_NULL, null=True, blank=True)
+    selected_fields = models.JSONField(null=True, blank=True)  # For table charts
+    created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
+
+    # Keep this field as JSON, no conflict with ChartJoin
+    joins = models.JSONField(null=True, blank=True)
 
     def __str__(self):
         return self.name
 
-JOIN_TYPE_CHOICES = [
-    ("inner", "Inner"),
-    ("left", "Left"),
-    ("right", "Right"),
-]
 
+# ------------------------------
+# ChartJoin model
+# ------------------------------
 class ChartJoin(models.Model):
     chart = models.ForeignKey(
-        'Chart',
+        Chart,
         on_delete=models.CASCADE,
-        related_name='joins',
-        null=True,
-        blank=True  # optional, allows form serializers to omit it
+        related_name="join_objects",  # <- avoids conflict with Chart.joins
     )
-
-    left_dataset = models.ForeignKey(
-        Dataset,
-        on_delete=models.CASCADE,
-        related_name='left_joins'
-    )
-    left_field = models.CharField(max_length=255)
-    right_dataset = models.ForeignKey(
-        Dataset,
-        on_delete=models.CASCADE,
-        related_name='right_joins'
-    )
-    right_field = models.CharField(max_length=255)
-    on_condition = models.CharField(max_length=512, blank=True, null=True)
+    table_name = models.CharField(max_length=255)
     type = models.CharField(max_length=10, choices=JOIN_TYPE_CHOICES, default="inner")
+    on = models.JSONField(null=True, blank=True)  # e.g., {"chart_field": "table_field"}
+
+    def __str__(self):
+        return f"{self.chart.name} join {self.table_name}"
 
 
 
