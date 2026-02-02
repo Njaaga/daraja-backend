@@ -154,7 +154,7 @@ class ChartJoin(models.Model):
     chart = models.ForeignKey(
         'Chart',
         on_delete=models.CASCADE,
-        related_name='joins',
+        related_name='chart_joins',
         null=True,
         blank=True  # optional, allows form serializers to omit it
     )
