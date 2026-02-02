@@ -152,16 +152,27 @@ class Chart(models.Model):
 # ------------------------------
 class ChartJoin(models.Model):
     chart = models.ForeignKey(
-        Chart,
+        'Chart',
         on_delete=models.CASCADE,
-        related_name="join_objects",  # <- avoids conflict with Chart.joins
+        related_name='joins',
+        null=True,
+        blank=True  # optional, allows form serializers to omit it
     )
-    table_name = models.CharField(max_length=255)
-    type = models.CharField(max_length=10, choices=JOIN_TYPE_CHOICES, default="inner")
-    on = models.JSONField(null=True, blank=True)  # e.g., {"chart_field": "table_field"}
 
-    def __str__(self):
-        return f"{self.chart.name} join {self.table_name}"
+    left_dataset = models.ForeignKey(
+        Dataset,
+        on_delete=models.CASCADE,
+        related_name='left_joins'
+    )
+    left_field = models.CharField(max_length=255)
+    right_dataset = models.ForeignKey(
+        Dataset,
+        on_delete=models.CASCADE,
+        related_name='right_joins'
+    )
+    right_field = models.CharField(max_length=255)
+    on_condition = models.CharField(max_length=512, blank=True, null=True)
+    type = models.CharField(max_length=10, choices=JOIN_TYPE_CHOICES, default="inner")
 
 
 
