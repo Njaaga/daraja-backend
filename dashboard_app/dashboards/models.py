@@ -162,15 +162,30 @@ class ChartJoin(models.Model):
     left_dataset = models.ForeignKey(
         Dataset,
         on_delete=models.CASCADE,
-        related_name='left_joins'
+        related_name='left_joins', 
+        null=True,
+        blank=True
     )
-    left_field = models.CharField(max_length=255)
+    
+    left_field = models.CharField(
+        max_length=255, 
+        null=True, 
+        blank=True)
+    
     right_dataset = models.ForeignKey(
         Dataset,
         on_delete=models.CASCADE,
-        related_name='right_joins'
+        related_name='right_joins',
+        null=True,
+        blank=True
     )
-    right_field = models.CharField(max_length=255)
+    
+    right_field = models.CharField(
+        max_length=255,
+        null=True,
+        blank=True
+    )
+
     on_condition = models.CharField(max_length=512, blank=True, null=True)
     type = models.CharField(max_length=10, choices=JOIN_TYPE_CHOICES, default="inner")
 
