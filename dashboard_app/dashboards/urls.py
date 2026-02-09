@@ -19,7 +19,6 @@ from .views import (
 
 from django.contrib.auth import views as auth_views
 
-from .oauth.quickbooks import quickbooks_connect, quickbooks_callback
 
 # =========================================================
 # PROTECTED ROUTES (REQUIRE AUTH via DRF)
