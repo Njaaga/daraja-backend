@@ -16,7 +16,7 @@ from .views import (
     support_guest,
 )
 
-from .oauth.quickbooks import quickbooks_connect, quickbooks_callback
+from oauth.quickbooks import quickbooks_connect, quickbooks_callback
 
 from django.contrib.auth import views as auth_views
 
