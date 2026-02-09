@@ -582,64 +582,94 @@ class ApiDataSourceViewSet(viewsets.ModelViewSet):
     serializer_class = ApiDataSourceSerializer
     permission_classes = [IsAuthenticated]
 
+    # ------------------------------------------------------------------
+    # Queryset (tenant-scoped + soft delete aware)
+    # ------------------------------------------------------------------
     def get_queryset(self):
         tenant = get_current_tenant()
         show_deleted = self.request.query_params.get("show_deleted") == "true"
 
         qs = ApiDataSource.objects.filter(tenant=tenant)
-        return qs.filter(is_deleted=show_deleted) if show_deleted else qs.filter(is_deleted=False)
+        return qs if show_deleted else qs.filter(is_deleted=False)
 
+    # ------------------------------------------------------------------
+    # Object lookup (tenant-safe)
+    # ------------------------------------------------------------------
     def get_object(self):
         tenant = get_current_tenant()
         return get_object_or_404(
             ApiDataSource,
-            id=self.kwargs["pk"],
-            tenant=tenant
+            pk=self.kwargs["pk"],
+            tenant=tenant,
         )
 
+    # ------------------------------------------------------------------
+    # Create
+    # ------------------------------------------------------------------
     def perform_create(self, serializer):
         tenant = get_current_tenant()
+
         enforce_subscription_limit(tenant, "datasources")
 
         serializer.save(
             tenant=tenant,
-            created_by=self.request.user
+            created_by=self.request.user,
         )
 
-    # ♻️ Soft delete
+    # ------------------------------------------------------------------
+    # Soft delete
+    # ------------------------------------------------------------------
     def destroy(self, request, *args, **kwargs):
-        obj = self.get_object()
-        obj.is_deleted = True
-        obj.save(update_fields=["is_deleted"])
+        instance = self.get_object()
+        instance.is_deleted = True
+        instance.save(update_fields=["is_deleted"])
 
         return Response(
-            {"success": True, "message": "API source moved to recycle bin"},
-            status=status.HTTP_200_OK
+            {
+                "success": True,
+                "message": "API source moved to recycle bin",
+            },
+            status=status.HTTP_200_OK,
         )
 
-    # ♻️ Restore
+    # ------------------------------------------------------------------
+    # Restore soft-deleted source
+    # ------------------------------------------------------------------
     @action(detail=True, methods=["post"])
     def restore(self, request, pk=None):
         tenant = get_current_tenant()
-        obj = get_object_or_404(
-            ApiDataSource.objects.filter(tenant=tenant),
-            id=pk
+
+        instance = get_object_or_404(
+            ApiDataSource,
+            pk=pk,
+            tenant=tenant,
         )
-        obj.is_deleted = False
-        obj.save(update_fields=["is_deleted"])
+
+        instance.is_deleted = False
+        instance.save(update_fields=["is_deleted"])
 
         return Response(
-            {"success": True, "message": "API source restored"}
+            {
+                "success": True,
+                "message": "API source restored",
+            },
+            status=status.HTTP_200_OK,
         )
 
+    # ------------------------------------------------------------------
+    # Hard delete (permanent)
+    # ------------------------------------------------------------------
     @action(detail=True, methods=["delete"])
     def hard_delete(self, request, pk=None):
-        ApiDataSource = self.get_object()
-        ApiDataSource.delete()
+        instance = self.get_object()
+        instance.delete()
 
         return Response(
-            {"success": True, "message": "API Datasource permanently deleted"},
-            status=status.HTTP_200_OK
+            {
+                "success": True,
+                "message": "API source permanently deleted",
+            },
+            status=status.HTTP_200_OK,
         )
 
 
