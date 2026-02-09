@@ -83,12 +83,18 @@ class SetPasswordSerializer(serializers.Serializer):
 # API DATA SOURCE SERIALIZER
 # ----------------------------------------------------
 class ApiDataSourceSerializer(serializers.ModelSerializer):
-    # 🔒 write-only secrets
-    api_key = serializers.CharField(write_only=True, required=False, allow_blank=True)
-    bearer_token = serializers.CharField(write_only=True, required=False, allow_blank=True)
-    jwt_secret = serializers.CharField(write_only=True, required=False, allow_blank=True)
+    # 🔒 Write-only secrets
+    api_key = serializers.CharField(
+        write_only=True, required=False, allow_blank=True
+    )
+    bearer_token = serializers.CharField(
+        write_only=True, required=False, allow_blank=True
+    )
+    jwt_secret = serializers.CharField(
+        write_only=True, required=False, allow_blank=True
+    )
 
-    # Tenant info (read-only)
+    # 🏢 Tenant info (read-only)
     tenant_id = serializers.PrimaryKeyRelatedField(
         source="tenant",
         read_only=True
@@ -106,21 +112,21 @@ class ApiDataSourceSerializer(serializers.ModelSerializer):
             "base_url",
             "auth_type",
 
-            # API key
+            # API Key auth
             "api_key",
             "api_key_name",
 
-            # Bearer
+            # Bearer auth
             "bearer_token",
 
-            # JWT
+            # JWT auth
             "jwt_secret",
             "jwt_subject",
             "jwt_audience",
             "jwt_issuer",
             "jwt_ttl_seconds",
 
-            # Meta
+            # Metadata
             "created_by",
             "created_at",
             "tenant_id",
@@ -133,6 +139,9 @@ class ApiDataSourceSerializer(serializers.ModelSerializer):
             "tenant_name",
         ]
 
+    # ------------------------------------------------------------------
+    # 🔍 Validation
+    # ------------------------------------------------------------------
     def validate(self, attrs):
         auth_type = attrs.get(
             "auth_type",
@@ -142,30 +151,68 @@ class ApiDataSourceSerializer(serializers.ModelSerializer):
         def existing(field):
             return getattr(self.instance, field, None) if self.instance else None
 
-        if auth_type == "API_KEY_HEADER" or auth_type == "API_KEY_QUERY":
+        if auth_type in ("API_KEY_HEADER", "API_KEY_QUERY"):
             if not (attrs.get("api_key") or existing("api_key")):
-                raise serializers.ValidationError(
-                    "API key auth requires api_key"
-                )
+                raise serializers.ValidationError({
+                    "api_key": "API key is required for this auth type."
+                })
 
-        if auth_type == "BEARER":
+        elif auth_type == "BEARER":
             if not (attrs.get("bearer_token") or existing("bearer_token")):
-                raise serializers.ValidationError(
-                    "Bearer auth requires bearer_token"
-                )
+                raise serializers.ValidationError({
+                    "bearer_token": "Bearer token is required."
+                })
 
-        if auth_type == "JWT_HS256":
+        elif auth_type == "JWT_HS256":
             secret = attrs.get("jwt_secret") or existing("jwt_secret")
             subject = attrs.get("jwt_subject") or existing("jwt_subject")
             audience = attrs.get("jwt_audience") or existing("jwt_audience")
 
-            if not all([secret, subject, audience]):
-                raise serializers.ValidationError(
-                    "JWT auth requires secret, subject, and audience"
-                )
+            missing = [
+                name for name, value in {
+                    "jwt_secret": secret,
+                    "jwt_subject": subject,
+                    "jwt_audience": audience,
+                }.items()
+                if not value
+            ]
+
+            if missing:
+                raise serializers.ValidationError({
+                    field: "This field is required for JWT auth."
+                    for field in missing
+                })
 
         return attrs
 
+    # ------------------------------------------------------------------
+    # 🛡️ Prevent wiping secrets on PATCH
+    # ------------------------------------------------------------------
+    def update(self, instance, validated_data):
+        for secret_field in [
+            "api_key",
+            "bearer_token",
+            "jwt_secret",
+        ]:
+            if secret_field not in validated_data:
+                validated_data[secret_field] = getattr(instance, secret_field)
+
+        return super().update(instance, validated_data)
+
+    # ------------------------------------------------------------------
+    # 🧩 Auto-attach tenant & creator
+    # ------------------------------------------------------------------
+    def create(self, validated_data):
+        request = self.context.get("request")
+
+        if request and request.user.is_authenticated:
+            validated_data.setdefault("created_by", request.user)
+            validated_data.setdefault(
+                "tenant",
+                getattr(request.user, "tenant", None)
+            )
+
+        return super().create(validated_data)
 
 
 # ----------------------------------------------------
