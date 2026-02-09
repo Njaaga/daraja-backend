@@ -590,14 +590,12 @@ class ApiDataSourceViewSet(viewsets.ModelViewSet):
         show_deleted = self.request.query_params.get("show_deleted") == "true"
 
         qs = ApiDataSource.objects.filter(tenant=tenant)
-        return qs.filter(is_deleted=show_deleted) if show_deleted else qs.filter(is_deleted=False)
+        return qs if show_deleted else qs.filter(is_deleted=False)
 
     def get_object(self):
         tenant = get_current_tenant()
         return get_object_or_404(
-            ApiDataSource,
-            id=self.kwargs["pk"],
-            tenant=tenant
+            ApiDataSource, pk=self.kwargs["pk"], tenant=tenant
         )
 
     def perform_create(self, serializer):
@@ -606,45 +604,29 @@ class ApiDataSourceViewSet(viewsets.ModelViewSet):
 
         serializer.save(
             tenant=tenant,
-            created_by=self.request.user
+            created_by=self.request.user,
         )
 
-    # ♻️ Soft delete
     def destroy(self, request, *args, **kwargs):
-        obj = self.get_object()
-        obj.is_deleted = True
-        obj.save(update_fields=["is_deleted"])
+        instance = self.get_object()
+        instance.is_deleted = True
+        instance.save(update_fields=["is_deleted"])
 
-        return Response(
-            {"success": True, "message": "API source moved to recycle bin"},
-            status=status.HTTP_200_OK
-        )
+        return Response({"success": True})
 
-    # ♻️ Restore
     @action(detail=True, methods=["post"])
     def restore(self, request, pk=None):
-        tenant = get_current_tenant()
-        obj = get_object_or_404(
-            ApiDataSource.objects.filter(tenant=tenant),
-            id=pk
-        )
-        obj.is_deleted = False
-        obj.save(update_fields=["is_deleted"])
+        instance = self.get_object()
+        instance.is_deleted = False
+        instance.save(update_fields=["is_deleted"])
 
-        return Response(
-            {"success": True, "message": "API source restored"}
-        )
+        return Response({"success": True})
 
     @action(detail=True, methods=["delete"])
     def hard_delete(self, request, pk=None):
-        ApiDataSource = self.get_object()
-        ApiDataSource.delete()
-
-        return Response(
-            {"success": True, "message": "API Datasource permanently deleted"},
-            status=status.HTTP_200_OK
-        )
-
+        instance = self.get_object()
+        instance.delete()
+        return Response({"success": True})
 
 
 # ---------- Datasets ----------
