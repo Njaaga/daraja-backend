@@ -5,42 +5,109 @@ from django.contrib.postgres.fields import ArrayField
 
 
 class ApiDataSource(models.Model):
+    # ----------------------------
+    # Providers
+    # ----------------------------
+    PROVIDERS = [
+        ("generic", "Generic API"),
+        ("quickbooks", "QuickBooks Online"),
+    ]
+
+    # ----------------------------
+    # Authentication Types
+    # ----------------------------
     AUTH_TYPES = [
         ("NONE", "None"),
         ("API_KEY_HEADER", "API Key (Header)"),
         ("API_KEY_QUERY", "API Key (Query Param)"),
         ("BEARER", "Bearer Token"),
         ("JWT_HS256", "JWT (HS256)"),
+        ("OAUTH2", "OAuth 2.0"),
     ]
 
+    # ----------------------------
+    # Core metadata
+    # ----------------------------
     name = models.CharField(max_length=255)
-    base_url = models.URLField()
-    auth_type = models.CharField(max_length=32, choices=AUTH_TYPES, default="NONE")
+    provider = models.CharField(
+        max_length=32,
+        choices=PROVIDERS,
+        default="generic",
+        db_index=True
+    )
 
-    # 🔐 API Key auth
-    api_key = models.CharField(max_length=1024, blank=True)
+    base_url = models.URLField(
+        help_text="Base API URL (no trailing slash)"
+    )
+
+    auth_type = models.CharField(
+        max_length=32,
+        choices=AUTH_TYPES,
+        default="NONE"
+    )
+
+    # ----------------------------
+    # API Key authentication
+    # ----------------------------
+    api_key = models.TextField(blank=True)
     api_key_name = models.CharField(
         max_length=255,
         default="Authorization",
-        help_text="Header name or query param name"
+        help_text="Header or query parameter name"
     )
 
-    # 🔐 Bearer auth
-    bearer_token = models.CharField(max_length=2048, blank=True)
+    # ----------------------------
+    # Static Bearer authentication
+    # (Generic APIs only)
+    # ----------------------------
+    bearer_token = models.TextField(blank=True)
+    bearer_prefix = models.CharField(
+        max_length=32,
+        default="Bearer"
+    )
 
-    # 🔐 JWT auth (HS256)
-    jwt_secret = models.CharField(max_length=1024, blank=True, null=True)
+    # ----------------------------
+    # JWT (HS256)
+    # ----------------------------
+    jwt_secret = models.TextField(blank=True, null=True)
     jwt_subject = models.CharField(max_length=255, blank=True, null=True)
     jwt_audience = models.CharField(max_length=255, blank=True, null=True)
     jwt_issuer = models.CharField(max_length=255, blank=True, null=True)
-    jwt_ttl_seconds = models.IntegerField(default=300)
+    jwt_ttl_seconds = models.PositiveIntegerField(default=300)
 
+    # ----------------------------
+    # OAuth 2.0 (QuickBooks, future providers)
+    # ----------------------------
+    oauth_access_token = models.TextField(blank=True, null=True)
+    oauth_refresh_token = models.TextField(blank=True, null=True)
+    oauth_token_expires_at = models.DateTimeField(blank=True, null=True)
+
+    # QuickBooks-specific
+    realm_id = models.CharField(
+        max_length=64,
+        blank=True,
+        null=True,
+        help_text="QuickBooks company (realm) ID"
+    )
+
+    # ----------------------------
+    # Optional provider headers
+    # ----------------------------
+    extra_headers = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text="Optional provider-specific headers (e.g. minorversion)"
+    )
+
+    # ----------------------------
+    # Ownership & lifecycle
+    # ----------------------------
     tenant = models.ForeignKey(
         "tenants.Tenant",
         on_delete=models.CASCADE,
         related_name="api_sources",
-        null=True,      # ✅ MUST be True for now
-        blank=True,
+        null=True,
+        blank=True
     )
 
     created_by = models.ForeignKey(
@@ -49,26 +116,45 @@ class ApiDataSource(models.Model):
         null=True,
         blank=True
     )
+
     created_at = models.DateTimeField(default=timezone.now)
 
-    # ♻️ Soft delete
+    # Soft delete
     is_deleted = models.BooleanField(default=False)
 
+    # ----------------------------
+    # Meta
+    # ----------------------------
     class Meta:
+        ordering = ["-created_at"]
         indexes = [
             models.Index(fields=["tenant", "is_deleted"]),
+            models.Index(fields=["provider"]),
         ]
-        ordering = ["-created_at"]
 
+    # ----------------------------
+    # Helpers
+    # ----------------------------
     def save(self, *args, **kwargs):
-        # Normalize base_url
         if self.base_url:
             self.base_url = self.base_url.rstrip("/")
         super().save(*args, **kwargs)
 
-    def __str__(self):
-        return self.name
+    def is_oauth(self):
+        return self.auth_type == "OAUTH2"
 
+    def is_quickbooks(self):
+        return self.provider == "quickbooks"
+
+    def token_expired(self):
+        return (
+            self.oauth_token_expires_at
+            and timezone.now() >= self.oauth_token_expires_at
+        )
+
+    def __str__(self):
+        return f"{self.name} ({self.provider})"
+        
 
 
 class Dataset(models.Model):
