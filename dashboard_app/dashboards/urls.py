@@ -19,6 +19,8 @@ from .views import (
 
 from django.contrib.auth import views as auth_views
 
+from .oauth.quickbooks import quickbooks_connect, quickbooks_callback
+
 # =========================================================
 # PROTECTED ROUTES (REQUIRE AUTH via DRF)
 # =========================================================
@@ -54,5 +56,8 @@ urlpatterns = [
 
     # dataset adhoc execution endpoint
     path("datasets/run/", DatasetRunAdhocView.as_view(), name="datasets-adhoc-run"),
+
+    path("oauth/quickbooks/connect/", quickbooks_connect),
+    path("oauth/quickbooks/callback/", quickbooks_callback),
 
 ]
