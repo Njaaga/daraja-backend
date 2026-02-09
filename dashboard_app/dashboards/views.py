@@ -54,6 +54,7 @@ from django.db import IntegrityError
 from rest_framework.exceptions import APIException
 import requests
 from django.shortcuts import redirect
+from django.contrib.auth.decorators import login_required
 
 
 # ---------------------------
