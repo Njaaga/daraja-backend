@@ -14,8 +14,6 @@ from .views import (
     ResetPasswordView,
     support_request,
     support_guest,
-    quickbooks_connect,
-    quickbooks_callback,
 )
 
 from django.contrib.auth import views as auth_views
@@ -55,7 +53,5 @@ urlpatterns = [
 
     # dataset adhoc execution endpoint
     path("datasets/run/", DatasetRunAdhocView.as_view(), name="datasets-adhoc-run"),
-    path("oauth/quickbooks/connect", quickbooks_connect),
-    path("oauth/quickbooks/callback", quickbooks_callback),
 
 ]
