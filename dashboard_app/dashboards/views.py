@@ -52,6 +52,8 @@ from datetime import timedelta
 from rest_framework.parsers import JSONParser
 from django.db import IntegrityError
 from rest_framework.exceptions import APIException
+import requests
+from django.shortcuts import redirect
 
 
 # ---------------------------
@@ -1295,6 +1297,48 @@ Message:
         return Response({"error": "Failed to send support email"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
     return Response({"success": True})
+
+
+@login_required
+def quickbooks_callback(request):
+    code = request.GET.get("code")
+    realm_id = request.GET.get("realmId")
+    state = request.GET.get("state")
+
+    if state != request.session.get("qb_oauth_state"):
+        raise ValueError("Invalid OAuth state")
+
+    token_res = requests.post(
+        "https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer",
+        auth=(settings.QB_CLIENT_ID, settings.QB_CLIENT_SECRET),
+        headers={"Accept": "application/json"},
+        data={
+            "grant_type": "authorization_code",
+            "code": code,
+            "redirect_uri": settings.QB_REDIRECT_URI,
+        },
+    ).json()
+
+    source, _ = ApiDataSource.objects.get_or_create(
+        provider="quickbooks",
+        tenant=request.user.tenant,
+        defaults={
+            "name": "QuickBooks Online",
+            "base_url": "https://quickbooks.api.intuit.com/v3/company/{realm_id}",
+            "auth_type": "OAUTH2",
+            "created_by": request.user,
+        },
+    )
+
+    source.oauth_access_token = token_res["access_token"]
+    source.oauth_refresh_token = token_res["refresh_token"]
+    source.oauth_token_expires_at = timezone.now() + timedelta(
+        seconds=token_res["expires_in"]
+    )
+    source.realm_id = realm_id
+    source.save()
+
+    return redirect("/api-sources")
 
 
     
