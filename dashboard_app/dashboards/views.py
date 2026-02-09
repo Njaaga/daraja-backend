@@ -52,9 +52,6 @@ from datetime import timedelta
 from rest_framework.parsers import JSONParser
 from django.db import IntegrityError
 from rest_framework.exceptions import APIException
-import requests
-from django.shortcuts import redirect
-from django.contrib.auth.decorators import login_required
 
 
 # ---------------------------
@@ -581,7 +578,69 @@ class GroupViewSet(viewsets.ModelViewSet):
 
 
 # ---------- Data Sources ----------
+class ApiDataSourceViewSet(viewsets.ModelViewSet):
+    serializer_class = ApiDataSourceSerializer
+    permission_classes = [IsAuthenticated]
 
+    def get_queryset(self):
+        tenant = get_current_tenant()
+        show_deleted = self.request.query_params.get("show_deleted") == "true"
+
+        qs = ApiDataSource.objects.filter(tenant=tenant)
+        return qs.filter(is_deleted=show_deleted) if show_deleted else qs.filter(is_deleted=False)
+
+    def get_object(self):
+        tenant = get_current_tenant()
+        return get_object_or_404(
+            ApiDataSource,
+            id=self.kwargs["pk"],
+            tenant=tenant
+        )
+
+    def perform_create(self, serializer):
+        tenant = get_current_tenant()
+        enforce_subscription_limit(tenant, "datasources")
+
+        serializer.save(
+            tenant=tenant,
+            created_by=self.request.user
+        )
+
+    # ♻️ Soft delete
+    def destroy(self, request, *args, **kwargs):
+        obj = self.get_object()
+        obj.is_deleted = True
+        obj.save(update_fields=["is_deleted"])
+
+        return Response(
+            {"success": True, "message": "API source moved to recycle bin"},
+            status=status.HTTP_200_OK
+        )
+
+    # ♻️ Restore
+    @action(detail=True, methods=["post"])
+    def restore(self, request, pk=None):
+        tenant = get_current_tenant()
+        obj = get_object_or_404(
+            ApiDataSource.objects.filter(tenant=tenant),
+            id=pk
+        )
+        obj.is_deleted = False
+        obj.save(update_fields=["is_deleted"])
+
+        return Response(
+            {"success": True, "message": "API source restored"}
+        )
+
+    @action(detail=True, methods=["delete"])
+    def hard_delete(self, request, pk=None):
+        ApiDataSource = self.get_object()
+        ApiDataSource.delete()
+
+        return Response(
+            {"success": True, "message": "API Datasource permanently deleted"},
+            status=status.HTTP_200_OK
+        )
 
 
 
@@ -1206,8 +1265,6 @@ Message:
         return Response({"error": "Failed to send support email"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
     return Response({"success": True})
-
-
 
 
     
