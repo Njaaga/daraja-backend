@@ -6,20 +6,22 @@ from django.utils import timezone
 
 
 def quickbooks_connect(request):
-    from tenants.middleware import get_current_tenant
-
-    tenant = get_current_tenant()  # from request header
+    # Normally headers are used to determine tenant
+    tenant = request.META.get("HTTP_X_TENANT_SLUG")  # None for redirects
     if not tenant:
-        return JsonResponse({"error": "Tenant header missing"}, status=400)
+        # fallback: extract from query param (frontend must send tenant in ?state=)
+        tenant = request.GET.get("state")
 
-    # Send tenant as state (securely)
+    if not tenant:
+        return JsonResponse({"error": "Tenant missing"}, status=400)
+
     url = (
         "https://appcenter.intuit.com/connect/oauth2"
         f"?client_id={settings.QUICKBOOKS_CLIENT_ID}"
         "&response_type=code"
         "&scope=com.intuit.quickbooks.accounting"
         f"&redirect_uri={settings.QUICKBOOKS_REDIRECT_URI}"
-        f"&state={tenant}"  # 🔑 pass tenant here
+        f"&state={tenant}"  # tenant slug passed along
     )
     return redirect(url)
 
@@ -28,10 +30,12 @@ def quickbooks_connect(request):
 def quickbooks_callback(request):
     from dashboards.models import ApiDataSource
     from tenants.models import Tenant
+    import requests
+    from django.utils import timezone
 
     code = request.GET.get("code")
     realm_id = request.GET.get("realmId")
-    state = request.GET.get("state")  # this is your tenant slug
+    state = request.GET.get("state")  # this is the tenant slug
 
     if not code or not realm_id or not state:
         return JsonResponse({"error": "Invalid callback"}, status=400)
@@ -42,9 +46,6 @@ def quickbooks_callback(request):
         return JsonResponse({"error": "Tenant not found"}, status=400)
 
     # Exchange code for tokens
-    import requests
-    from django.utils import timezone
-
     token_url = "https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer"
 
     response = requests.post(
@@ -83,4 +84,3 @@ def quickbooks_callback(request):
     )
 
     return JsonResponse({"success": True})
-
