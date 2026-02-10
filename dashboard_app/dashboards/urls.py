@@ -16,10 +16,10 @@ from .views import (
     support_guest,
 )
 
-#from dashboards.oauth.quickbooks import (
- #   quickbooks_connect,
-  #  quickbooks_callback,
-#)
+from dashboards.oauth.quickbooks import (
+    quickbooks_connect,
+    quickbooks_callback,
+)
 
 from django.contrib.auth import views as auth_views
 
@@ -39,6 +39,9 @@ router.register(r'charts', ChartViewSet, basename="chart")
 urlpatterns = [
 
     path('users/me/', CurrentUserView.as_view(), name='current-user'),
+
+    path("api/oauth/quickbooks/connect/", quickbooks_connect),
+    path("api/oauth/quickbooks/callback/", quickbooks_callback),
     
     # all secured authenticated API endpoints
     path("", include(router.urls)),
@@ -61,7 +64,6 @@ urlpatterns = [
     # dataset adhoc execution endpoint
     path("datasets/run/", DatasetRunAdhocView.as_view(), name="datasets-adhoc-run"),
 
-#    path("oauth/quickbooks/connect/", quickbooks_connect),
- #   path("oauth/quickbooks/callback/", quickbooks_callback),
+
 
 ]
