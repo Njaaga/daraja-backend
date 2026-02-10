@@ -3,6 +3,8 @@ from django.conf import settings
 from django.http import JsonResponse
 from django.shortcuts import redirect
 from django.utils import timezone
+from urllib.parse import quote
+
 
 
 def quickbooks_connect(request):
