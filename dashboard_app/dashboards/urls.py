@@ -18,7 +18,6 @@ from .views import (
     support_guest,
 )
 
-from .oauth.quickbooks import quickbooks_connect, quickbooks_callback
 
 # DRF router for protected endpoints
 router = DefaultRouter()
@@ -33,8 +32,6 @@ urlpatterns = [
     # -----------------------------
     # Public QuickBooks OAuth endpoints
     # -----------------------------
-    path("qb/oauth/connect/", csrf_exempt(quickbooks_connect)),
-    path("qb/oauth/callback/", csrf_exempt(quickbooks_callback)),
 
 
     # -----------------------------
