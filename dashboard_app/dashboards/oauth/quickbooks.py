@@ -33,69 +33,39 @@ def quickbooks_connect(request):
 # Step 2: Handle OAuth callback
 # -----------------------------------------------------------
 def quickbooks_callback(request):
+    logger.info("QuickBooks callback reached with GET params: %s", request.GET)
+
     code = request.GET.get("code")
     realm_id = request.GET.get("realmId")
 
     if not code or not realm_id:
-        logger.warning("QuickBooks callback missing code or realmId")
-        return HttpResponse("Invalid callback parameters", status=400)
+        logger.error("Missing code or realmId in callback")
+        return HttpResponse("Invalid callback", status=400)
 
-    token_url = "https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer"
+    tenant = get_current_tenant()
+    if tenant is None:
+        logger.error("No tenant found in callback")
+        return HttpResponse("No tenant", status=400)
 
+    # Temporarily skip real token request for testing
     try:
-        response = requests.post(
-            token_url,
-            auth=(settings.QUICKBOOKS_CLIENT_ID, settings.QUICKBOOKS_CLIENT_SECRET),
-            headers={"Accept": "application/json"},
-            data={
-                "grant_type": "authorization_code",
-                "code": code,
-                "redirect_uri": settings.QUICKBOOKS_REDIRECT_URI,
-            },
-            timeout=10
-        )
-
-        if response.status_code != 200:
-            logger.error(
-                "QuickBooks token request failed: %s - %s",
-                response.status_code,
-                response.text
-            )
-            return HttpResponse(
-                f"Failed to get QuickBooks token: {response.status_code}", status=500
-            )
-
-        data = response.json()
-        access_token = data.get("access_token")
-        refresh_token = data.get("refresh_token")
-        expires_in = data.get("expires_in")
-
-        if not access_token or not refresh_token or not expires_in:
-            logger.error("QuickBooks token response missing fields: %s", data)
-            return HttpResponse("Invalid token response from QuickBooks", status=500)
-
-        tenant = get_current_tenant()
-
-        ApiDataSource.objects.update_or_create(
+        obj, created = ApiDataSource.objects.update_or_create(
             tenant=tenant,
             provider="quickbooks",
             defaults={
                 "name": "QuickBooks Online",
                 "base_url": f"https://quickbooks.api.intuit.com/v3/company/{realm_id}",
                 "auth_type": "BEARER",
-                "bearer_token": access_token,
-                "refresh_token": refresh_token,
+                # Dummy tokens for now
+                "bearer_token": "dummy",
+                "refresh_token": "dummy",
                 "realm_id": realm_id,
-                "token_expires_at": timezone.now() + timezone.timedelta(seconds=expires_in),
-            },
+                "token_expires_at": timezone.now() + timezone.timedelta(hours=1),
+            }
         )
-
-        return HttpResponse("QuickBooks connected successfully")
-
-    except requests.RequestException as e:
-        logger.error("QuickBooks HTTP error: %s", e, exc_info=True)
-        return HttpResponse("Failed to communicate with QuickBooks", status=500)
-
+        logger.info("API datasource saved: %s", obj)
     except Exception as e:
-        logger.error("QuickBooks callback error: %s", e, exc_info=True)
-        return HttpResponse("An unexpected error occurred", status=500)
+        logger.exception("Error saving API datasource")
+        return HttpResponse("Server error", status=500)
+
+    return HttpResponse("QuickBooks connected successfully")
