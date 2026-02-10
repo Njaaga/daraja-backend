@@ -25,65 +25,55 @@ def quickbooks_connect(request):
 
 
 def quickbooks_callback(request):
-    """Handle QuickBooks OAuth callback and store tokens."""
-    code = request.GET.get("code")
-    realm_id = request.GET.get("realmId")
-
-    logger.info("QuickBooks callback received: code=%s, realmId=%s", code, realm_id)
-
-    if not code or not realm_id:
-        logger.error("Missing code or realmId in callback")
-        return HttpResponse("Invalid callback", status=400)
-
-    tenant = get_current_tenant()
-    if tenant is None:
-        logger.error("No tenant found in callback")
-        return HttpResponse("No tenant found", status=400)
-
-    # Exchange code for tokens
-    token_url = "https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer"
-    auth = (settings.QUICKBOOKS_CLIENT_ID, settings.QUICKBOOKS_CLIENT_SECRET)
-    headers = {"Accept": "application/json"}
-    data = {
-        "grant_type": "authorization_code",
-        "code": code,
-        "redirect_uri": settings.QUICKBOOKS_REDIRECT_URI,
-    }
-
     try:
-        response = requests.post(token_url, auth=auth, headers=headers, data=data)
+        code = request.GET.get("code")
+        realm_id = request.GET.get("realmId")
+
+        if not code or not realm_id:
+            return HttpResponse("Missing code or realmId", status=400)
+
+        tenant = get_current_tenant()
+        if not tenant:
+            return HttpResponse("No tenant found", status=400)
+
+        # Exchange code for tokens
+        token_url = "https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer"
+        response = requests.post(
+            token_url,
+            auth=(settings.QUICKBOOKS_CLIENT_ID, settings.QUICKBOOKS_CLIENT_SECRET),
+            headers={"Accept": "application/json"},
+            data={
+                "grant_type": "authorization_code",
+                "code": code,
+                "redirect_uri": settings.QUICKBOOKS_REDIRECT_URI,
+            },
+        )
+
         response.raise_for_status()
-    except requests.RequestException as e:
-        logger.exception("Error exchanging code for token: %s", e)
-        return HttpResponse("Error retrieving tokens from QuickBooks", status=500)
-
-    try:
-        token_data = response.json()
-        access_token = token_data.get("access_token")
-        refresh_token = token_data.get("refresh_token")
-        expires_in = token_data.get("expires_in")
-
-        if not access_token or not refresh_token:
-            logger.error("Incomplete token data received: %s", token_data)
-            return HttpResponse("Incomplete token data from QuickBooks", status=500)
+        data = response.json()
 
         # Save/update API datasource
-        obj, created = ApiDataSource.objects.update_or_create(
+        ApiDataSource.objects.update_or_create(
             tenant=tenant,
             provider="quickbooks",
             defaults={
                 "name": "QuickBooks Online",
                 "base_url": f"https://quickbooks.api.intuit.com/v3/company/{realm_id}",
                 "auth_type": "BEARER",
-                "bearer_token": access_token,
-                "refresh_token": refresh_token,
+                "bearer_token": data.get("access_token", ""),
+                "refresh_token": data.get("refresh_token", ""),
                 "realm_id": realm_id,
-                "token_expires_at": timezone.now() + timezone.timedelta(seconds=expires_in),
+                "token_expires_at": timezone.now()
+                + timezone.timedelta(seconds=data.get("expires_in", 0)),
             },
         )
-        logger.info("QuickBooks API source saved: %s", obj)
-    except Exception as e:
-        logger.exception("Error saving API datasource")
-        return HttpResponse("Error saving API datasource", status=500)
 
-    return HttpResponse("QuickBooks connected successfully")
+        return HttpResponse("QuickBooks connected successfully")
+
+    except requests.RequestException as e:
+        # network / HTTP errors
+        return HttpResponse(f"Requests error: {str(e)}", status=500)
+    except Exception as e:
+        # show the full traceback
+        tb = traceback.format_exc()
+        return HttpResponse(f"Server error:\n{tb}", status=500)
