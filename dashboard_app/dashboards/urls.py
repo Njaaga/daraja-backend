@@ -17,9 +17,10 @@ from .views import (
     ResetPasswordView,
     support_request,
     support_guest,
-    quickbooks_connect,
-    quickbooks_callback,
 )
+
+from dashboards.oauth.quickbooks import quickbooks_connect, quickbooks_callback
+
 
 # =========================================================
 # ROUTER (Protected DRF endpoints)
