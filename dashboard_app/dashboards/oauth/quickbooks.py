@@ -6,7 +6,7 @@ from django.utils import timezone
 
 
 def quickbooks_connect(request):
-    from tenants.utils import get_current_tenant
+    from tenants.middleware import get_current_tenant
 
     tenant = get_current_tenant()  # from request header
     if not tenant:
