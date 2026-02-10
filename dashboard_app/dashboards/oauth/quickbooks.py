@@ -5,14 +5,14 @@ from django.shortcuts import redirect
 from django.http import HttpResponse
 from django.utils import timezone
 
-from .models import ApiDataSource
+from dashboards.models import ApiDataSource
 from tenants.utils import get_current_tenant
 
-logger = logging.getLogger(__name__)  # Use Django's logging system
+logger = logging.getLogger(__name__)
 
 
 def quickbooks_connect(request):
-    """Redirect user to QuickBooks OAuth authorization page."""
+    """Redirect user to QuickBooks OAuth page."""
     try:
         url = (
             "https://appcenter.intuit.com/connect/oauth2"
@@ -24,12 +24,12 @@ def quickbooks_connect(request):
         )
         return redirect(url)
     except Exception as e:
-        logger.exception("QuickBooks connect failed")
-        return HttpResponse(f"Error initiating QuickBooks OAuth: {str(e)}", status=500)
+        logger.exception("QuickBooks connect error")
+        return HttpResponse(f"Failed to initiate QuickBooks OAuth: {str(e)}", status=500)
 
 
 def quickbooks_callback(request):
-    """Handle QuickBooks OAuth callback and store tokens."""
+    """Handle QuickBooks OAuth callback safely."""
     try:
         code = request.GET.get("code")
         realm_id = request.GET.get("realmId")
@@ -39,7 +39,7 @@ def quickbooks_callback(request):
 
         token_url = "https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer"
 
-        # Exchange code for access/refresh tokens
+        # Exchange code for tokens
         response = requests.post(
             token_url,
             auth=(settings.QUICKBOOKS_CLIENT_ID, settings.QUICKBOOKS_CLIENT_SECRET),
@@ -49,20 +49,18 @@ def quickbooks_callback(request):
                 "code": code,
                 "redirect_uri": settings.QUICKBOOKS_REDIRECT_URI,
             },
-            timeout=10  # prevent hanging
+            timeout=10,
         )
 
         if response.status_code != 200:
-            logger.error("QuickBooks token exchange failed: %s %s", response.status_code, response.text)
+            logger.error("Token exchange failed: %s %s", response.status_code, response.text)
             return HttpResponse(
                 f"Failed to exchange code for token. Status: {response.status_code}", status=400
             )
 
         data = response.json()
-
         tenant = get_current_tenant()
 
-        # Update or create API data source
         ApiDataSource.objects.update_or_create(
             tenant=tenant,
             provider="quickbooks",
@@ -80,8 +78,8 @@ def quickbooks_callback(request):
         return HttpResponse("QuickBooks connected successfully!")
 
     except requests.RequestException as e:
-        logger.exception("QuickBooks callback HTTP request failed")
-        return HttpResponse(f"HTTP request error: {str(e)}", status=500)
+        logger.exception("QuickBooks HTTP error")
+        return HttpResponse(f"HTTP error: {str(e)}", status=500)
     except Exception as e:
-        logger.exception("QuickBooks callback processing failed")
+        logger.exception("QuickBooks callback failed")
         return HttpResponse(f"Internal error: {str(e)}", status=500)
