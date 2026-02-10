@@ -33,16 +33,16 @@ urlpatterns = [
     # -----------------------------
     # Public QuickBooks OAuth endpoints
     # -----------------------------
-    path(
-        "oauth/quickbooks/connect/",
-        csrf_exempt(quickbooks_connect),
-        name="quickbooks-connect"
-    ),
-    path(
-        "oauth/quickbooks/callback/",
-        csrf_exempt(quickbooks_callback),
-        name="quickbooks-callback"
-    ),
+#    path(
+ #       "oauth/quickbooks/connect/",
+  #      csrf_exempt(quickbooks_connect),
+   #     name="quickbooks-connect"
+   # ),
+   # path(
+    #    "oauth/quickbooks/callback/",
+     #   csrf_exempt(quickbooks_callback),
+      #  name="quickbooks-callback"
+   # ),
 
     # -----------------------------
     # Current user info
