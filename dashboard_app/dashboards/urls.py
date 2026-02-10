@@ -14,6 +14,8 @@ from .views import (
     ResetPasswordView,
     support_request,
     support_guest,
+    quickbooks_connect,
+    quickbooks_callback,
 )
 
 
@@ -56,7 +58,7 @@ urlpatterns = [
     # dataset adhoc execution endpoint
     path("datasets/run/", DatasetRunAdhocView.as_view(), name="datasets-adhoc-run"),
 
-    path("url/oauth/quickbooks/connect/", quickbooks_connect),
-    path("url/oauth/quickbooks/callback/", quickbooks_callback),
+    path("api/oauth/quickbooks/connect/", quickbooks_connect),
+    path("api/oauth/quickbooks/callback/", quickbooks_callback),
 
 ]
