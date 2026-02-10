@@ -61,7 +61,7 @@ urlpatterns = [
     # dataset adhoc execution endpoint
     path("datasets/run/", DatasetRunAdhocView.as_view(), name="datasets-adhoc-run"),
 
-    path("api/oauth/quickbooks/connect/", quickbooks_connect),
-    path("api/oauth/quickbooks/callback/", quickbooks_callback),
+    path("oauth/quickbooks/connect/", quickbooks_connect),
+    path("oauth/quickbooks/callback/", quickbooks_callback),
 
 ]
