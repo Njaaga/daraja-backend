@@ -5,6 +5,8 @@ from subscriptions import views as sub_views
 
 urlpatterns = [
     path('admin/', admin.site.urls),
+    path('api/oauth/quickbooks/connect/', csrf_exempt(quickbooks_connect)),
+    path('api/oauth/quickbooks/callback/', csrf_exempt(quickbooks_callback)),
     path('api/tenants/', include('tenants.urls')),
     path('api/', include('dashboards.urls')),
     path('api/token/', TokenObtainPairView.as_view(), name='token_obtain_pair'),
