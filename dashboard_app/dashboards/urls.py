@@ -1,4 +1,3 @@
-# dashboards/urls.py
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
 from django.views.decorators.csrf import csrf_exempt
@@ -21,10 +20,7 @@ from .views import (
 
 from .oauth.quickbooks import quickbooks_connect, quickbooks_callback
 
-
-# =========================================================
-# ROUTER (Protected DRF endpoints)
-# =========================================================
+# DRF router for protected endpoints
 router = DefaultRouter()
 router.register(r'users', UserViewSet, basename='user')
 router.register(r'dashboards', DashboardViewSet, basename="dashboard")
@@ -33,13 +29,9 @@ router.register(r'api-sources', ApiDataSourceViewSet, basename="api-source")
 router.register(r'datasets', DatasetViewSet, basename="dataset")
 router.register(r'charts', ChartViewSet, basename="chart")
 
-# =========================================================
-# URL PATTERNS
-# =========================================================
 urlpatterns = [
-
     # -----------------------------
-    # Public OAuth / no auth required
+    # Public QuickBooks OAuth endpoints
     # -----------------------------
     path(
         "oauth/quickbooks/connect/",
@@ -58,7 +50,7 @@ urlpatterns = [
     path('users/me/', CurrentUserView.as_view(), name='current-user'),
 
     # -----------------------------
-    # Authentication / password
+    # Password / auth management
     # -----------------------------
     path("set-password/", SetPasswordView.as_view(), name="set-password"),
     path("forgot-password/", ForgotPasswordView.as_view(), name="forgot-password"),
@@ -77,7 +69,6 @@ urlpatterns = [
 
     # -----------------------------
     # Protected DRF router endpoints
-    # Must come after OAuth URLs to prevent conflicts
     # -----------------------------
     path("", include(router.urls)),
 ]
