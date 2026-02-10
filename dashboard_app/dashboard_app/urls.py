@@ -5,8 +5,8 @@ from subscriptions import views as sub_views
 
 urlpatterns = [
     path('admin/', admin.site.urls),
-    path('api/', include('dashboards.urls')),
     path('api/tenants/', include('tenants.urls')),
+    path('api/', include('dashboards.urls')),
     path('api/token/', TokenObtainPairView.as_view(), name='token_obtain_pair'),
     path('api/token/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
     path("api/subscription/", include("subscriptions.urls")),
