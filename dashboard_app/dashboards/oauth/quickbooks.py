@@ -5,15 +5,15 @@ from django.http import JsonResponse
 import requests
 from django.utils import timezone
 from dashboards.models import ApiDataSource
-from tenants.middleware import get_current_tenant
+from tenants.models import Tenant
 
 # -----------------------------
 # Connect: Redirect to Intuit OAuth
 # -----------------------------
 def quickbooks_connect(request):
-    tenant_slug = request.GET.get("state")
+    tenant_slug = request.GET.get("tenant")  # frontend must send tenant
     if not tenant_slug:
-        return JsonResponse({"error": "Tenant state missing"}, status=400)
+        return JsonResponse({"error": "Tenant parameter missing"}, status=400)
 
     redirect_uri = quote(settings.QB_REDIRECT_URI, safe="")
 
@@ -34,11 +34,16 @@ def quickbooks_connect(request):
 def quickbooks_callback(request):
     code = request.GET.get("code")
     realm_id = request.GET.get("realmId")
-    tenant_slug = request.GET.get("state")
+    tenant_slug = request.GET.get("state")  # tenant comes from state
 
     if not code or not realm_id or not tenant_slug:
         return JsonResponse({"error": "Invalid callback"}, status=400)
 
+    tenant = Tenant.objects.filter(subdomain__iexact=tenant_slug).first()
+    if not tenant:
+        return JsonResponse({"error": f"Tenant '{tenant_slug}' not found"}, status=404)
+
+    # Exchange code for access token
     token_url = "https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer"
     response = requests.post(
         token_url,
@@ -54,27 +59,20 @@ def quickbooks_callback(request):
     if "access_token" not in data:
         return JsonResponse({"error": "QuickBooks token failed", "data": data}, status=400)
 
-    # Find tenant object by slug
-    from tenants.models import Tenant
-    tenant = Tenant.objects.filter(subdomain__iexact=tenant_slug).first()
-    if not tenant:
-        return JsonResponse({"error": f"Tenant '{tenant_slug}' not found"}, status=404)
-
-    # Save or update the QuickBooks API source for this tenant
+    # Create or update ApiDataSource
     ApiDataSource.objects.update_or_create(
         tenant=tenant,
         provider="quickbooks",
         defaults={
             "name": "QuickBooks Online",
             "base_url": f"https://quickbooks.api.intuit.com/v3/company/{realm_id}",
-            "auth_type": "BEARER",
-            "bearer_token": data["access_token"],
+            "auth_type": "OAUTH2",
+            "oauth_access_token": data["access_token"],
             "oauth_refresh_token": data.get("refresh_token"),
             "realm_id": realm_id,
             "oauth_token_expires_at": timezone.now() + timezone.timedelta(seconds=data.get("expires_in", 3600)),
         },
     )
 
-    # Optionally redirect to frontend dashboard
-    from django.shortcuts import redirect as dj_redirect
-    return dj_redirect(f"{settings.FRONTEND_URL}/api-sources?qb_connected=1")
+    # Redirect back to frontend dashboard
+    return redirect(f"{settings.FRONTEND_URL}/api-sources?qb_connected=1")
