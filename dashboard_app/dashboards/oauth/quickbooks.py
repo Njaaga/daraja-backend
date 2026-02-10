@@ -17,10 +17,10 @@ def quickbooks_connect(request):
 
     url = (
         "https://appcenter.intuit.com/connect/oauth2"
-        f"?client_id={settings.QUICKBOOKS_CLIENT_ID}"
+        f"?client_id={settings.QB_CLIENT_ID}"
         "&response_type=code"
         "&scope=com.intuit.quickbooks.accounting"
-        f"&redirect_uri={settings.QUICKBOOKS_REDIRECT_URI}"
+        f"&redirect_uri={settings.QB_REDIRECT_URI}"
         f"&state={tenant}"  # tenant slug passed along
     )
     return redirect(url)
@@ -50,12 +50,12 @@ def quickbooks_callback(request):
 
     response = requests.post(
         token_url,
-        auth=(settings.QUICKBOOKS_CLIENT_ID, settings.QUICKBOOKS_CLIENT_SECRET),
+        auth=(settings.QB_CLIENT_ID, settings.QB_CLIENT_SECRET),
         headers={"Accept": "application/json"},
         data={
             "grant_type": "authorization_code",
             "code": code,
-            "redirect_uri": settings.QUICKBOOKS_REDIRECT_URI,
+            "redirect_uri": settings.QB_REDIRECT_URI,
         },
     )
 
