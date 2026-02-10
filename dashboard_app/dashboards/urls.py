@@ -42,12 +42,12 @@ urlpatterns = [
     # Public OAuth / no auth required
     # -----------------------------
     path(
-        "api/oauth/quickbooks/connect/",
+        "oauth/quickbooks/connect/",
         csrf_exempt(quickbooks_connect),
         name="quickbooks-connect"
     ),
     path(
-        "api/oauth/quickbooks/callback/",
+        "oauth/quickbooks/callback/",
         csrf_exempt(quickbooks_callback),
         name="quickbooks-callback"
     ),
