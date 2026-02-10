@@ -6,26 +6,44 @@ from django.utils import timezone
 
 
 def quickbooks_connect(request):
+    from tenants.utils import get_current_tenant
+
+    tenant = get_current_tenant()  # from request header
+    if not tenant:
+        return JsonResponse({"error": "Tenant header missing"}, status=400)
+
+    # Send tenant as state (securely)
     url = (
         "https://appcenter.intuit.com/connect/oauth2"
         f"?client_id={settings.QUICKBOOKS_CLIENT_ID}"
         "&response_type=code"
         "&scope=com.intuit.quickbooks.accounting"
         f"&redirect_uri={settings.QUICKBOOKS_REDIRECT_URI}"
-        "&state=secure"
+        f"&state={tenant}"  # 🔑 pass tenant here
     )
     return redirect(url)
 
 
+
 def quickbooks_callback(request):
     from dashboards.models import ApiDataSource
-    from tenants.utils import get_current_tenant
+    from tenants.models import Tenant
 
     code = request.GET.get("code")
     realm_id = request.GET.get("realmId")
+    state = request.GET.get("state")  # this is your tenant slug
 
-    if not code or not realm_id:
+    if not code or not realm_id or not state:
         return JsonResponse({"error": "Invalid callback"}, status=400)
+
+    try:
+        tenant = Tenant.objects.get(slug=state)
+    except Tenant.DoesNotExist:
+        return JsonResponse({"error": "Tenant not found"}, status=400)
+
+    # Exchange code for tokens
+    import requests
+    from django.utils import timezone
 
     token_url = "https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer"
 
@@ -48,8 +66,7 @@ def quickbooks_callback(request):
             status=400,
         )
 
-    tenant = get_current_tenant()
-
+    # Save / update the API source for this tenant
     ApiDataSource.objects.update_or_create(
         tenant=tenant,
         provider="quickbooks",
@@ -66,3 +83,4 @@ def quickbooks_callback(request):
     )
 
     return JsonResponse({"success": True})
+
