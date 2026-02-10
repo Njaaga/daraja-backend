@@ -20,6 +20,7 @@ ALLOWED_HOSTS = [
     "api.darajatechnologies.ca",
     "darajatechnologies.ca",
     "www.darajatechnologies.ca",
+    "reporting.darajatechnologies.ca",
     "18.220.106.255",
 ]
 
