@@ -3,11 +3,14 @@ from django.conf import settings
 from django.shortcuts import redirect
 from django.http import HttpResponse
 from django.utils import timezone
+from django.views.decorators.csrf import csrf_exempt
+from django.utils.decorators import method_decorator
 
 from dashboards.models import ApiDataSource
 from tenants.utils import get_current_tenant
 
 
+@csrf_exempt
 def quickbooks_connect(request):
     url = (
         "https://appcenter.intuit.com/connect/oauth2"
@@ -20,6 +23,7 @@ def quickbooks_connect(request):
     return redirect(url)
 
 
+@csrf_exempt
 def quickbooks_callback(request):
     code = request.GET.get("code")
     realm_id = request.GET.get("realmId")
