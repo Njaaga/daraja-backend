@@ -1,5 +1,6 @@
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
+from django.views.decorators.csrf import csrf_exempt
 from .views import (
     UserViewSet,
     DashboardViewSet,
@@ -37,11 +38,10 @@ router.register(r'datasets', DatasetViewSet, basename="dataset")
 router.register(r'charts', ChartViewSet, basename="chart")
 
 urlpatterns = [
-
+    path("api/oauth/quickbooks/connect/", csrf_exempt(quickbooks_connect)),
+    path("api/oauth/quickbooks/callback/", csrf_exempt(quickbooks_callback)),
+    
     path('users/me/', CurrentUserView.as_view(), name='current-user'),
-
-    path("api/oauth/quickbooks/connect/", quickbooks_connect),
-    path("api/oauth/quickbooks/callback/", quickbooks_callback),
     
     # all secured authenticated API endpoints
     path("", include(router.urls)),
