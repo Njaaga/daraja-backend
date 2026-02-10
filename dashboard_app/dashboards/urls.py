@@ -18,7 +18,7 @@ from .views import (
     support_guest,
 )
 
-from .oauth.quickbooks import quickbooks_connect, quickbooks_callback
+#from .oauth.quickbooks import quickbooks_connect, quickbooks_callback
 
 # DRF router for protected endpoints
 router = DefaultRouter()
