@@ -216,7 +216,7 @@ STRIPE_WEBHOOK_SECRET = "whsec_3TrmAjNN5tdAtqvux04Yp7M9zsxZtJoo"
 # --------------------------------------------------
 APPEND_SLASH = True
 
-QB_CLIENT_ID = "your-client-id"
-QB_CLIENT_SECRET = "your-client-secret"
+QB_CLIENT_ID = "ABH2nzGHo5Sm9Iyf7FVHUKGgvxBVfzjYiX0DjwTiJ4vEj5RsH4"
+QB_CLIENT_SECRET = "IXfmnq9FDvy8FoL9KorZjb9fTq6CjChjc0gMDzq5"
 QB_REDIRECT_URI = "https://yourapp.com/api/oauth/quickbooks/callback"
 
