@@ -5,7 +5,7 @@ from django.shortcuts import redirect
 from django.http import HttpResponse
 from django.utils import timezone
 
-from dashboards.models import ApiDataSource
+from .models import ApiDataSource
 from tenants.utils import get_current_tenant
 
 logger = logging.getLogger(__name__)  # Use Django's logging system
