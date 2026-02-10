@@ -1,31 +1,36 @@
-import requests
-from django.conf import settings
-from django.http import JsonResponse
-from django.shortcuts import redirect
-from django.utils import timezone
 from urllib.parse import quote
+from django.conf import settings
+from django.shortcuts import redirect
+from django.http import JsonResponse
+import requests
+from django.utils import timezone
+from dashboards.models import ApiDataSource
+from tenants.middleware import get_current_tenant
 
-
-
+# -----------------------------
+# Connect: Redirect to Intuit OAuth
+# -----------------------------
 def quickbooks_connect(request):
-    tenant_slug = request.GET.get("state")  # tenant passed from frontend
+    tenant_slug = request.GET.get("state")
     if not tenant_slug:
-        return JsonResponse({"error": "Tenant missing"}, status=400)
+        return JsonResponse({"error": "Tenant state missing"}, status=400)
 
     redirect_uri = quote(settings.QB_REDIRECT_URI, safe="")
 
     url = (
-        f"https://appcenter.intuit.com/connect/oauth2"
+        "https://appcenter.intuit.com/connect/oauth2"
         f"?client_id={settings.QB_CLIENT_ID}"
-        f"&response_type=code"
-        f"&scope=com.intuit.quickbooks.accounting"
+        "&response_type=code"
+        "&scope=com.intuit.quickbooks.accounting"
         f"&redirect_uri={redirect_uri}"
         f"&state={tenant_slug}"
     )
     return redirect(url)
 
 
-
+# -----------------------------
+# Callback: Exchange code for token
+# -----------------------------
 def quickbooks_callback(request):
     code = request.GET.get("code")
     realm_id = request.GET.get("realmId")
@@ -34,11 +39,6 @@ def quickbooks_callback(request):
     if not code or not realm_id or not tenant_slug:
         return JsonResponse({"error": "Invalid callback"}, status=400)
 
-    tenant = Tenant.objects.filter(subdomain__iexact=tenant_slug).first()
-    if not tenant:
-        return JsonResponse({"error": "Tenant not found"}, status=404)
-
-    # Exchange code for tokens
     token_url = "https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer"
     response = requests.post(
         token_url,
@@ -50,12 +50,17 @@ def quickbooks_callback(request):
             "redirect_uri": settings.QB_REDIRECT_URI,
         },
     )
-
     data = response.json()
     if "access_token" not in data:
-        return JsonResponse({"error": "QuickBooks token request failed", "data": data}, status=400)
+        return JsonResponse({"error": "QuickBooks token failed", "data": data}, status=400)
 
-    # Store token per tenant
+    # Find tenant object by slug
+    from tenants.models import Tenant
+    tenant = Tenant.objects.filter(subdomain__iexact=tenant_slug).first()
+    if not tenant:
+        return JsonResponse({"error": f"Tenant '{tenant_slug}' not found"}, status=404)
+
+    # Save or update the QuickBooks API source for this tenant
     ApiDataSource.objects.update_or_create(
         tenant=tenant,
         provider="quickbooks",
@@ -70,5 +75,6 @@ def quickbooks_callback(request):
         },
     )
 
-    # Redirect back to dashboard
-    return redirect(f"{settings.FRONTEND_URL}/api-sources")
+    # Optionally redirect to frontend dashboard
+    from django.shortcuts import redirect as dj_redirect
+    return dj_redirect(f"{settings.FRONTEND_URL}/api-sources?qb_connected=1")
