@@ -14,12 +14,15 @@ from .views import (
     ResetPasswordView,
     support_request,
     support_guest,
+)
+
+from dashboards.oauth.quickbooks import (
     quickbooks_connect,
     quickbooks_callback,
 )
 
-
 from django.contrib.auth import views as auth_views
+
 
 
 # =========================================================
