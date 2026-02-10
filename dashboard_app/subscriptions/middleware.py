@@ -72,12 +72,12 @@ class SubscriptionEnforcementMiddleware(MiddlewareMixin):
         "/api/support/",
         "/api/support-guest",
         "/api/support-guest/",
-        "api/subscription/usage",
-        "api/subscription/usage/",
-        "api/oauth/quickbooks/callback/",
-        "api/oauth/quickbooks/callback",
-        "api/oauth/quickbooks/connect/",
-        "api/oauth/quickbooks/connect",
+        "/api/subscription/usage",
+        "/api/subscription/usage/",
+        "/api/oauth/quickbooks/callback/",
+        "/api/oauth/quickbooks/callback",
+        "/api/oauth/quickbooks/connect/",
+        "/api/oauth/quickbooks/connect",
     ]
 
     def process_request(self, request):
