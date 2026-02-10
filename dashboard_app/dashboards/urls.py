@@ -1,51 +1,42 @@
 # dashboards/urls.py
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
-from django.views.decorators.csrf import csrf_exempt
 
 from .views import (
     UserViewSet,
     DashboardViewSet,
     GroupViewSet,
-    SetPasswordView,
     ApiDataSourceViewSet,
     DatasetViewSet,
     DatasetRunAdhocView,
     ChartViewSet,
     CurrentUserView,
+    SetPasswordView,
     ForgotPasswordView,
     ResetPasswordView,
     support_request,
     support_guest,
 )
 
-# ---------- Router (Protected DRF endpoints) ----------
 router = DefaultRouter()
-router.register(r'users', UserViewSet, basename='user')
-router.register(r'dashboards', DashboardViewSet, basename="dashboard")
-router.register(r'groups', GroupViewSet, basename="group")
-router.register(r'api-sources', ApiDataSourceViewSet, basename="api-source")
-router.register(r'datasets', DatasetViewSet, basename="dataset")
-router.register(r'charts', ChartViewSet, basename="chart")
+router.register("users", UserViewSet)
+router.register("dashboards", DashboardViewSet)
+router.register("groups", GroupViewSet)
+router.register("api-sources", ApiDataSourceViewSet)
+router.register("datasets", DatasetViewSet)
+router.register("charts", ChartViewSet)
 
-# ---------- URL patterns ----------
 urlpatterns = [
+    path("users/me/", CurrentUserView.as_view()),
 
-    # ---------- Current user info ----------
-    path('users/me/', CurrentUserView.as_view(), name='current-user'),
+    path("set-password/", SetPasswordView.as_view()),
+    path("forgot-password/", ForgotPasswordView.as_view()),
+    path("reset-password/", ResetPasswordView.as_view()),
 
-    # ---------- Authentication ----------
-    path("set-password/", SetPasswordView.as_view(), name="set-password"),
-    path("forgot-password/", ForgotPasswordView.as_view(), name="forgot-password"),
-    path("reset-password/", ResetPasswordView.as_view(), name="reset-password"),
-
-    # ---------- Support ----------
     path("support/", support_request),
     path("support-guest/", support_guest),
 
-    # ---------- Ad-hoc dataset execution ----------
-    path("datasets/run/", DatasetRunAdhocView.as_view(), name="datasets-adhoc-run"),
+    path("datasets/run/", DatasetRunAdhocView.as_view()),
 
-    # ---------- Protected DRF router endpoints ----------
     path("", include(router.urls)),
 ]
