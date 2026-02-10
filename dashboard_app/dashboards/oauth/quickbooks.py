@@ -69,9 +69,9 @@ def quickbooks_callback(request):
             "base_url": f"https://quickbooks.api.intuit.com/v3/company/{realm_id}",
             "auth_type": "BEARER",
             "bearer_token": data["access_token"],
-            "refresh_token": data.get("refresh_token"),
+            "oauth_refresh_token": data.get("refresh_token"),
             "realm_id": realm_id,
-            "token_expires_at": timezone.now() + timezone.timedelta(seconds=data.get("expires_in", 3600)),
+            "oauth_token_expires_at": timezone.now() + timezone.timedelta(seconds=data.get("expires_in", 3600)),
         },
     )
 
