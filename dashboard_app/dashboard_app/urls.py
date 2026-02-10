@@ -9,12 +9,12 @@ urlpatterns = [
     path(
         "api/oauth/quickbooks/connect/",
         csrf_exempt(quickbooks_connect),
-        name="quickbooks-connect",
+        name="quickbooks-connect"
     ),
     path(
         "api/oauth/quickbooks/callback/",
         csrf_exempt(quickbooks_callback),
-        name="quickbooks-callback",
+        name="quickbooks-callback"
     ),
     
     path('api/', include('dashboards.urls')),
