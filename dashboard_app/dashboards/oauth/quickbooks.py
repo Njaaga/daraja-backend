@@ -29,15 +29,14 @@ def quickbooks_connect(request):
 def quickbooks_callback(request):
     code = request.GET.get("code")
     realm_id = request.GET.get("realmId")
-    tenant_slug = request.GET.get("state")  # passed via state
+    tenant_slug = request.GET.get("state")
 
     if not code or not realm_id or not tenant_slug:
         return JsonResponse({"error": "Invalid callback"}, status=400)
 
-    try:
-        tenant = Tenant.objects.get(subdomain__iexact=tenant_slug)
-    except Tenant.DoesNotExist:
-        return JsonResponse({"error": "Tenant not found"}, status=400)
+    tenant = Tenant.objects.filter(subdomain__iexact=tenant_slug).first()
+    if not tenant:
+        return JsonResponse({"error": "Tenant not found"}, status=404)
 
     # Exchange code for tokens
     token_url = "https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer"
@@ -56,7 +55,7 @@ def quickbooks_callback(request):
     if "access_token" not in data:
         return JsonResponse({"error": "QuickBooks token request failed", "data": data}, status=400)
 
-    # Save / update API source
+    # Store token per tenant
     ApiDataSource.objects.update_or_create(
         tenant=tenant,
         provider="quickbooks",
@@ -71,4 +70,5 @@ def quickbooks_callback(request):
         },
     )
 
-    return JsonResponse({"success": True})
+    # Redirect back to dashboard
+    return redirect(f"{settings.FRONTEND_URL}/api-sources")
