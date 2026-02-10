@@ -19,7 +19,7 @@ from .views import (
     support_guest,
 )
 
-from dashboards.oauth.quickbooks import quickbooks_connect, quickbooks_callback
+from .oauth.quickbooks import quickbooks_connect, quickbooks_callback
 
 
 # =========================================================
