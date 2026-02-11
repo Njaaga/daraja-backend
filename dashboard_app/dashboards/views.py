@@ -627,6 +627,10 @@ class ApiDataSourceViewSet(viewsets.ModelViewSet):
     # ---------------- QuickBooks Entity Fields Endpoint ----------------
     @action(detail=True, methods=["get"], url_path="entity_fields/(?P<entity>[^/.]+)")
     def entity_fields(self, request, pk=None, entity=None):
+        """
+        Returns fields AND mock data for a given QuickBooks entity.
+        Useful for testing dashboards/charts before live QB connection.
+        """
         api_source = self.get_object()
     
         if not api_source.provider or api_source.provider.lower() != "quickbooks":
@@ -635,19 +639,33 @@ class ApiDataSourceViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST
             )
     
-        # Fields
-        mock_fields = {
+        # Define fields for common QB entities
+        entity_fields_map = {
             "Invoice": ["Id", "DocNumber", "CustomerRef", "TxnDate", "DueDate", "TotalAmt", "Balance"],
             "Customer": ["Id", "DisplayName", "PrimaryEmailAddr", "Phone", "Balance", "OpenBalance"],
             "Account": ["Id", "Name", "AccountType", "AccountSubType", "CurrentBalance"],
+            "Payment": ["Id", "CustomerRef", "TxnDate", "Amount", "PaymentMethodRef"],
         }
     
-        fields = mock_fields.get(entity, ["Id", "Name", "Value"])
+        fields = entity_fields_map.get(entity, ["Id", "Name", "Value"])
     
-        # Mock data
+        # Generate mock rows (10 rows)
         data = []
-        for i in range(10):
-            row = {f: f"{f}-{i+1}" for f in fields}
+        for i in range(1, 11):
+            row = {}
+            for f in fields:
+                if f.lower().endswith("id"):
+                    row[f] = i
+                elif f.lower() in ["totalamt", "balance", "openbalance", "currentbalance", "amount"]:
+                    row[f] = round(1000 * i * 1.11, 2)  # some numeric value
+                elif f.lower() in ["txn_date", "duedate"]:
+                    row[f] = f"2026-02-{i:02d}"
+                elif f.lower() == "primaryemailaddr":
+                    row[f] = f"user{i}@example.com"
+                elif f.lower() == "phone":
+                    row[f] = f"+1-555-010{i:02d}"
+                else:
+                    row[f] = f"{f}-{i}"
             data.append(row)
     
         return Response({"fields": fields, "data": data}, status=status.HTTP_200_OK)
