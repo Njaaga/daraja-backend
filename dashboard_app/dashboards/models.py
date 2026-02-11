@@ -159,19 +159,28 @@ class ApiDataSource(models.Model):
 
 class Dataset(models.Model):
     name = models.CharField(max_length=255)
+
     api_source = models.ForeignKey(
         ApiDataSource,
         on_delete=models.CASCADE,
         related_name="datasets"
     )
-    endpoint = models.CharField(max_length=1024)
+
+    # 🔹 GENERIC MODE (what you already have)
+    endpoint = models.CharField(max_length=1024, blank=True)
     query_params = models.JSONField(default=dict, blank=True)
 
+    # 🔹 SEMANTIC MODE (for QuickBooks & future BI)
+    entity = models.CharField(max_length=100, blank=True)     # Invoice, Customer
+    fields = models.JSONField(default=list, blank=True)       # ["Id", "TotalAmt"]
+    filters = models.JSONField(default=dict, blank=True)      # dates, status, etc.
+
+    tenant = models.ForeignKey(Tenant, on_delete=models.CASCADE)
     created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True)
     created_at = models.DateTimeField(default=timezone.now)
 
-    # 🔥 recycle bin
     is_deleted = models.BooleanField(default=False)
+
 
     def __str__(self):
         return self.name
