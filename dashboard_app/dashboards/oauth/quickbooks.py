@@ -21,9 +21,9 @@ def quickbooks_connect(request):
     auth_url = (
         "https://appcenter.intuit.com/connect/oauth2"
         f"?client_id={settings.QB_CLIENT_ID}"
-        f"&response_type=code"
-        f"&scope=com.intuit.quickbooks.accounting"
-        f"&redirect_uri={quote(settings.QB_REDIRECT_URI)}"
+        "&response_type=code"
+        "&scope=com.intuit.quickbooks.accounting"
+        f"&redirect_uri={quote(settings.QB_REDIRECT_URI, safe='')}"
         f"&state={quote(state)}"
     )
 
@@ -38,26 +38,61 @@ def quickbooks_callback(request):
     realm_id = request.GET.get("realmId")
     state = request.GET.get("state")
 
-    if not code or not state:
+    if not code or not state or not realm_id:
         return JsonResponse({"error": "Invalid OAuth response"}, status=400)
 
-    # ✅ Extract tenant safely
     if not state.startswith("tenant:"):
         return JsonResponse({"error": "Invalid state"}, status=400)
 
     tenant_slug = state.replace("tenant:", "", 1)
-    tenant = Tenant.objects.filter(subdomain=tenant_slug).first()
+    tenant = Tenant.objects.filter(subdomain__iexact=tenant_slug).first()
 
     if not tenant:
         return JsonResponse({"error": "Tenant not found"}, status=404)
 
-    # ⬇️ Now you have tenant WITHOUT headers
-    ApiSource.objects.create(
+    # 🔑 Exchange code for tokens
+    token_url = "https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer"
+
+    auth_header = base64.b64encode(
+        f"{settings.QB_CLIENT_ID}:{settings.QB_CLIENT_SECRET}".encode()
+    ).decode()
+
+    token_response = requests.post(
+        token_url,
+        headers={
+            "Authorization": f"Basic {auth_header}",
+            "Accept": "application/json",
+            "Content-Type": "application/x-www-form-urlencoded",
+        },
+        data={
+            "grant_type": "authorization_code",
+            "code": code,
+            "redirect_uri": settings.QB_REDIRECT_URI,
+        },
+    )
+
+    token_data = token_response.json()
+
+    if "access_token" not in token_data:
+        return JsonResponse(
+            {"error": "Token exchange failed", "data": token_data},
+            status=400,
+        )
+
+    # ✅ Save or update API source
+    ApiDataSource.objects.update_or_create(
         tenant=tenant,
-        type="quickbooks",
-        realm_id=realm_id,
-        access_token=access_token,
-        refresh_token=refresh_token,
+        provider="quickbooks",
+        defaults={
+            "name": "QuickBooks Online",
+            "base_url": f"https://quickbooks.api.intuit.com/v3/company/{realm_id}",
+            "auth_type": "OAUTH2",
+            "oauth_access_token": token_data["access_token"],
+            "oauth_refresh_token": token_data.get("refresh_token"),
+            "oauth_token_expires_at": timezone.now()
+            + timezone.timedelta(seconds=token_data.get("expires_in", 3600)),
+            "realm_id": realm_id,
+        },
     )
 
     return redirect(f"{settings.FRONTEND_URL}/api-sources?connected=quickbooks")
