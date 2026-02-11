@@ -627,28 +627,31 @@ class ApiDataSourceViewSet(viewsets.ModelViewSet):
     # ---------------- QuickBooks Entity Fields Endpoint ----------------
     @action(detail=True, methods=["get"], url_path="entity_fields/(?P<entity>[^/.]+)")
     def entity_fields(self, request, pk=None, entity=None):
-        """
-        Returns the fields for a given QuickBooks entity.
-        """
         api_source = self.get_object()
-
+    
         if not api_source.provider or api_source.provider.lower() != "quickbooks":
             return Response(
                 {"error": "Not a QuickBooks API source."},
                 status=status.HTTP_400_BAD_REQUEST
             )
-
-        # Mock fields for testing charts
+    
+        # Fields
         mock_fields = {
             "Invoice": ["Id", "DocNumber", "CustomerRef", "TxnDate", "DueDate", "TotalAmt", "Balance"],
             "Customer": ["Id", "DisplayName", "PrimaryEmailAddr", "Phone", "Balance", "OpenBalance"],
             "Account": ["Id", "Name", "AccountType", "AccountSubType", "CurrentBalance"],
-            "Payment": ["Id", "CustomerRef", "TxnDate", "Amount", "PaymentMethodRef"],
-            "Item": ["Id", "Name", "Description", "Type", "IncomeAccountRef", "ExpenseAccountRef"],
         }
-
+    
         fields = mock_fields.get(entity, ["Id", "Name", "Value"])
-        return Response({"fields": fields}, status=status.HTTP_200_OK)
+    
+        # Mock data
+        data = []
+        for i in range(10):
+            row = {f: f"{f}-{i+1}" for f in fields}
+            data.append(row)
+    
+        return Response({"fields": fields, "data": data}, status=status.HTTP_200_OK)
+
 
     # ---------------- QuickBooks Mock Data for Dataset Preview ----------------
     @action(detail=True, methods=["post"])
