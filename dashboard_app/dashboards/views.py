@@ -611,7 +611,6 @@ class ApiDataSourceViewSet(viewsets.ModelViewSet):
         instance = self.get_object()
         instance.is_deleted = True
         instance.save(update_fields=["is_deleted"])
-
         return Response({"success": True})
 
     @action(detail=True, methods=["post"])
@@ -619,7 +618,6 @@ class ApiDataSourceViewSet(viewsets.ModelViewSet):
         instance = self.get_object()
         instance.is_deleted = False
         instance.save(update_fields=["is_deleted"])
-
         return Response({"success": True})
 
     @action(detail=True, methods=["delete"])
@@ -628,6 +626,35 @@ class ApiDataSourceViewSet(viewsets.ModelViewSet):
         instance.delete()
         return Response({"success": True})
 
+    # ---------------- QuickBooks Entity Fields Endpoint ----------------
+    @action(
+        detail=True,
+        methods=["get"],
+        url_path=r"entities/(?P<entity>[^/.]+)/fields"
+    )
+    def entity_fields(self, request, pk=None, entity=None):
+        """
+        Returns a list of fields for a given QuickBooks entity.
+        Placeholder fields for testing.
+        """
+        api_source = self.get_object()
+
+        if not api_source.provider or api_source.provider.lower() != "quickbooks":
+            return Response(
+                {"error": "Not a QuickBooks API source."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Placeholder fields for testing
+        placeholder_fields = {
+            "Invoice": ["Id", "CustomerRef", "TxnDate", "TotalAmt", "Balance"],
+            "Customer": ["Id", "DisplayName", "PrimaryEmailAddr", "Phone"],
+            "Account": ["Id", "Name", "AccountType", "AccountSubType"],
+            "Payment": ["Id", "CustomerRef", "TxnDate", "Amount", "PaymentMethodRef"],
+        }
+
+        fields = placeholder_fields.get(entity, [])
+        return JsonResponse(fields, safe=False)
 
 # ---------- Datasets ----------
 class DatasetViewSet(viewsets.ModelViewSet):
