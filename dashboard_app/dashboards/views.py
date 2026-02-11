@@ -627,23 +627,17 @@ class ApiDataSourceViewSet(viewsets.ModelViewSet):
 
     # ---------------- QuickBooks Entity Fields + Mock Data ----------------
     @action(detail=True, methods=["get"], url_path="entity_fields")
-    def entity_fields(self, request, pk=None):
-        """
-        Returns available entities for QuickBooks
-        """
+    def list_entities(self, request, pk=None):
         api_source = self.get_object()
 
         if api_source.provider.lower() != "quickbooks":
-            return Response(
-                {"error": "Not a QuickBooks source"},
-                status=status.HTTP_400_BAD_REQUEST
-            )
+            return Response({"error": "Not QB"}, status=400)
 
         return Response({
             "Customer": ["Id", "DisplayName", "PrimaryEmailAddr", "Phone"],
             "Invoice": ["Id", "CustomerRef", "TxnDate", "TotalAmt", "Balance"],
             "Account": ["Id", "Name", "AccountType", "AccountSubType"],
-            "Payment": ["Id", "CustomerRef", "TxnDate", "Amount"]
+            "Payment": ["Id", "CustomerRef", "TxnDate", "Amount"],
         })
 
 
@@ -652,17 +646,8 @@ class ApiDataSourceViewSet(viewsets.ModelViewSet):
         methods=["get"],
         url_path=r"entity_fields/(?P<entity>[^/.]+)"
     )
-    def entity_fields_data(self, request, pk=None, entity=None):
-        """
-        Returns fields + MOCK DATA for a specific entity
-        """
+    def entity_preview(self, request, pk=None, entity=None):
         api_source = self.get_object()
-
-        if api_source.provider.lower() != "quickbooks":
-            return Response(
-                {"error": "Not a QuickBooks source"},
-                status=status.HTTP_400_BAD_REQUEST
-            )
 
         ENTITY_MAP = {
             "Customer": ["Id", "DisplayName", "PrimaryEmailAddr", "Phone"],
@@ -673,18 +658,12 @@ class ApiDataSourceViewSet(viewsets.ModelViewSet):
 
         fields = ENTITY_MAP.get(entity)
         if not fields:
-            return Response(
-                {"error": "Unknown entity"},
-                status=status.HTTP_404_NOT_FOUND
-            )
+            return Response({"error": "Unknown entity"}, status=404)
 
-        # MOCK DATA so charts work
-        rows = []
-        for i in range(10):
-            row = {}
-            for field in fields:
-                row[field] = f"{field}_{i+1}"
-            rows.append(row)
+        rows = [
+            {f: f"{f}_{i+1}" for f in fields}
+            for i in range(10)
+        ]
 
         return Response({
             "entity": entity,
