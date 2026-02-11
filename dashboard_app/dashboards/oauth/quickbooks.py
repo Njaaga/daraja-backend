@@ -4,7 +4,7 @@ from django.utils import timezone
 from django.http import JsonResponse
 import requests
 import base64
-
+from urllib.parse import quote
 from dashboards.models import ApiDataSource  # ✅ import from dashboards
 from tenants.models import Tenant
 from tenants.middleware import _thread_locals
