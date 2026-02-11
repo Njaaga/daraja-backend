@@ -624,12 +624,12 @@ class ApiDataSourceViewSet(viewsets.ModelViewSet):
         instance.delete()
         return Response({"success": True})
 
-    # ---------------- QuickBooks Entity Fields Endpoint ----------------
+
+    # ---------------- QuickBooks Entity Fields + Mock Data ----------------
     @action(detail=True, methods=["get"], url_path="entity_fields/(?P<entity>[^/.]+)")
     def entity_fields(self, request, pk=None, entity=None):
         """
-        Returns fields AND mock data for a given QuickBooks entity.
-        Useful for testing dashboards/charts before live QB connection.
+        Returns fields + mock data for a given QuickBooks entity.
         """
         api_source = self.get_object()
     
@@ -639,36 +639,39 @@ class ApiDataSourceViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST
             )
     
-        # Define fields for common QB entities
-        entity_fields_map = {
-            "Invoice": ["Id", "DocNumber", "CustomerRef", "TxnDate", "DueDate", "TotalAmt", "Balance"],
-            "Customer": ["Id", "DisplayName", "PrimaryEmailAddr", "Phone", "Balance", "OpenBalance"],
-            "Account": ["Id", "Name", "AccountType", "AccountSubType", "CurrentBalance"],
+        # Fields
+        placeholder_fields = {
+            "Invoice": ["Id", "CustomerRef", "TxnDate", "TotalAmt", "Balance"],
+            "Customer": ["Id", "DisplayName", "PrimaryEmailAddr", "Phone"],
+            "Account": ["Id", "Name", "AccountType", "AccountSubType"],
             "Payment": ["Id", "CustomerRef", "TxnDate", "Amount", "PaymentMethodRef"],
         }
     
-        fields = entity_fields_map.get(entity, ["Id", "Name", "Value"])
+        # Mock rows for testing
+        placeholder_data = {
+            "Invoice": [
+                {"Id": 1, "CustomerRef": "CUST-001", "TxnDate": "2026-02-11", "TotalAmt": 1200, "Balance": 200},
+                {"Id": 2, "CustomerRef": "CUST-002", "TxnDate": "2026-02-10", "TotalAmt": 800, "Balance": 0},
+            ],
+            "Customer": [
+                {"Id": 1, "DisplayName": "Acme Corp", "PrimaryEmailAddr": "contact@acme.com", "Phone": "123456789"},
+                {"Id": 2, "DisplayName": "Beta Ltd", "PrimaryEmailAddr": "hello@beta.com", "Phone": "987654321"},
+            ],
+            "Account": [
+                {"Id": 1, "Name": "Cash", "AccountType": "Bank", "AccountSubType": "Checking"},
+                {"Id": 2, "Name": "Accounts Receivable", "AccountType": "AccountsReceivable", "AccountSubType": "CurrentAssets"},
+            ],
+            "Payment": [
+                {"Id": 1, "CustomerRef": "CUST-001", "TxnDate": "2026-02-11", "Amount": 500, "PaymentMethodRef": "Check"},
+                {"Id": 2, "CustomerRef": "CUST-002", "TxnDate": "2026-02-10", "Amount": 800, "PaymentMethodRef": "CreditCard"},
+            ],
+        }
     
-        # Generate mock rows (10 rows)
-        data = []
-        for i in range(1, 11):
-            row = {}
-            for f in fields:
-                if f.lower().endswith("id"):
-                    row[f] = i
-                elif f.lower() in ["totalamt", "balance", "openbalance", "currentbalance", "amount"]:
-                    row[f] = round(1000 * i * 1.11, 2)  # some numeric value
-                elif f.lower() in ["txn_date", "duedate"]:
-                    row[f] = f"2026-02-{i:02d}"
-                elif f.lower() == "primaryemailaddr":
-                    row[f] = f"user{i}@example.com"
-                elif f.lower() == "phone":
-                    row[f] = f"+1-555-010{i:02d}"
-                else:
-                    row[f] = f"{f}-{i}"
-            data.append(row)
+        fields = placeholder_fields.get(entity, [])
+        data = placeholder_data.get(entity, [])
     
         return Response({"fields": fields, "data": data}, status=status.HTTP_200_OK)
+
 
 
     # ---------------- QuickBooks Mock Data for Dataset Preview ----------------
