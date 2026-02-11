@@ -34,23 +34,45 @@ def quickbooks_connect(request):
 # Callback: Exchange code for token
 # -----------------------------
 def quickbooks_callback(request):
+    """
+    OAuth callback for client-owned QuickBooks accounts.
+    Tenant is resolved from OAuth state (NOT headers).
+    """
+
+    # -----------------------------
+    # 1. Validate OAuth response
+    # -----------------------------
     code = request.GET.get("code")
     realm_id = request.GET.get("realmId")
     state = request.GET.get("state")
 
-    if not code or not state or not realm_id:
-        return JsonResponse({"error": "Invalid OAuth response"}, status=400)
+    if not code or not realm_id or not state:
+        return JsonResponse(
+            {"error": "Invalid QuickBooks OAuth response"},
+            status=400,
+        )
 
+    # -----------------------------
+    # 2. Extract tenant from state
+    # state format: tenant:<slug>
+    # -----------------------------
     if not state.startswith("tenant:"):
-        return JsonResponse({"error": "Invalid state"}, status=400)
+        return JsonResponse({"error": "Invalid OAuth state"}, status=400)
 
     tenant_slug = state.replace("tenant:", "", 1)
-    tenant = Tenant.objects.filter(subdomain__iexact=tenant_slug).first()
 
+    tenant = Tenant.objects.filter(subdomain__iexact=tenant_slug).first()
     if not tenant:
         return JsonResponse({"error": "Tenant not found"}, status=404)
 
-    # 🔑 Exchange code for tokens
+    # 🔐 IMPORTANT:
+    # Restore tenant context manually for this request
+    # (OAuth callbacks do not have headers)
+    _thread_locals.tenant = tenant
+
+    # -----------------------------
+    # 3. Exchange code for tokens
+    # -----------------------------
     token_url = "https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer"
 
     auth_header = base64.b64encode(
@@ -69,30 +91,48 @@ def quickbooks_callback(request):
             "code": code,
             "redirect_uri": settings.QB_REDIRECT_URI,
         },
+        timeout=15,
     )
 
     token_data = token_response.json()
 
     if "access_token" not in token_data:
         return JsonResponse(
-            {"error": "Token exchange failed", "data": token_data},
+            {
+                "error": "QuickBooks token exchange failed",
+                "details": token_data,
+            },
             status=400,
         )
 
-    # ✅ Save or update API source
-    ApiDataSource.objects.update_or_create(
-        tenant=tenant,
-        provider="quickbooks",
-        defaults={
-            "name": "QuickBooks Online",
-            "base_url": f"https://quickbooks.api.intuit.com/v3/company/{realm_id}",
-            "auth_type": "OAUTH2",
-            "oauth_access_token": token_data["access_token"],
-            "oauth_refresh_token": token_data.get("refresh_token"),
-            "oauth_token_expires_at": timezone.now()
-            + timezone.timedelta(seconds=token_data.get("expires_in", 3600)),
-            "realm_id": realm_id,
-        },
-    )
+    # -----------------------------
+    # 4. Persist ApiDataSource
+    # -----------------------------
+    expires_in = token_data.get("expires_in", 3600)
 
-    return redirect(f"{settings.FRONTEND_URL}/api-sources?connected=quickbooks")
+    with transaction.atomic():
+        ApiDataSource.objects.update_or_create(
+            tenant=tenant,
+            provider="quickbooks",
+            defaults={
+                "name": "QuickBooks Online",
+                "base_url": f"https://quickbooks.api.intuit.com/v3/company/{realm_id}",
+                "auth_type": "OAUTH2",
+                "oauth_access_token": token_data["access_token"],
+                "oauth_refresh_token": token_data.get("refresh_token"),
+                "oauth_token_expires_at": timezone.now()
+                + timezone.timedelta(seconds=expires_in),
+                "realm_id": realm_id,
+                "extra_headers": {
+                    "Accept": "application/json",
+                    "Content-Type": "application/json",
+                },
+            },
+        )
+
+    # -----------------------------
+    # 5. Redirect back to frontend
+    # -----------------------------
+    return redirect(
+        f"{settings.FRONTEND_URL}/api-sources?connected=quickbooks"
+    )
