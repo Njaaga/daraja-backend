@@ -4,7 +4,7 @@ from django.shortcuts import redirect
 from django.http import JsonResponse
 import requests
 from django.utils import timezone
-from dashboards.models import ApiDataSource
+from .models import ApiDataSource
 from tenants.models import Tenant
 
 # -----------------------------
