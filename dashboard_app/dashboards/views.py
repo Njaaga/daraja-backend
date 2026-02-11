@@ -729,60 +729,87 @@ class DatasetViewSet(viewsets.ModelViewSet):
 
     # ---------- Internal Dataset Runner ----------
     def _run_dataset(self, dataset):
+        """
+        Run a dataset using the saved ApiDataSource.
+        QuickBooks: uses bearer_token and base_url from DB.
+        Generic REST: uses stored credentials from DB.
+        """
         source = dataset.api_source
-    
-        # ---------- QUICKBOOKS DATASETS ----------
-        if getattr(source, "provider", "").lower() == "quickbooks" and getattr(dataset, "entity", None):
-            return self._run_quickbooks_dataset(dataset)
-    
-        # ---------- GENERIC REST DATASETS ----------
-        endpoint = dataset.endpoint or ""
-        url = urljoin(source.base_url.rstrip("/") + "/", endpoint.lstrip("/"))
-    
-        params = dataset.query_params or {}
+        params = dataset.query_params.copy() if dataset.query_params else {}
         headers = {}
     
-        # ---------- AUTH HANDLING ----------
-        if source.auth_type == "API_KEY_HEADER" and source.api_key:
-            headers[source.api_key_header] = source.api_key
-        elif source.auth_type == "BEARER" and source.api_key:
-            headers["Authorization"] = f"Bearer {source.api_key}"
-        elif source.auth_type == "API_KEY_QUERY" and source.api_key:
-            params[source.api_key_header] = source.api_key
+        # ---------------- QuickBooks ----------------
+        if source.provider == "quickbooks":
+            if not source.bearer_token or not source.base_url:
+                return Response({"error": "QuickBooks source missing access token or base URL."}, status=400)
     
+            headers["Authorization"] = f"Bearer {source.bearer_token}"
+            headers["Accept"] = "application/json"
+    
+            # Use dataset entity & fields, or defaults
+            entity = getattr(dataset, "entity", None) or "Customer"
+            fields = getattr(dataset, "fields", []) or ["*"]
+            query = f"SELECT {', '.join(fields)} FROM {entity}"
+    
+            # Apply filters
+            filters = getattr(dataset, "filters", {})
+            date_field = filters.get("date_field")
+            if date_field and filters.get("from") and filters.get("to"):
+                query += f" WHERE {date_field} BETWEEN '{filters['from']}' AND '{filters['to']}'"
+    
+            equals = filters.get("equals", {})
+            for k, v in equals.items():
+                if "WHERE" in query:
+                    query += f" AND {k}='{v}'"
+                else:
+                    query += f" WHERE {k}='{v}'"
+    
+            url = f"{source.base_url}/query"
+            params["query"] = query
+    
+        # ---------------- Generic REST APIs ----------------
+        else:
+            url = urljoin(source.base_url.rstrip("/") + "/", (dataset.endpoint or "").lstrip("/"))
+    
+            if source.auth_type == "API_KEY_HEADER" and source.api_key:
+                headers[source.api_key_header] = source.api_key
+            elif source.auth_type == "BEARER" and source.api_key:
+                headers["Authorization"] = f"Bearer {source.api_key}"
+            elif source.auth_type == "API_KEY_QUERY" and source.api_key:
+                params.update({source.api_key_header: source.api_key})
+    
+        # ---------------- Execute request ----------------
         try:
-            resp = requests.get(url, headers=headers, params=params, timeout=15)
+            resp = requests.get(url, headers=headers, params=params, timeout=20)
             resp.raise_for_status()
             data = resp.json()
     
-            # ---------- NORMALIZE RESPONSE ----------
-            if isinstance(data, dict):
-                for key in ("results", "data", "rows", "items"):
-                    if key in data and isinstance(data[key], list):
-                        data = data[key]
+            # Normalize QuickBooks response
+            if source.provider == "quickbooks":
+                query_response = data.get("QueryResponse", {})
+                if query_response:
+                    key = next(iter(query_response.keys()))
+                    data = query_response.get(key, [])
+                else:
+                    data = []
+    
+            # Normalize REST responses
+            elif isinstance(data, dict):
+                for k in ("results", "data", "rows"):
+                    if k in data and isinstance(data[k], list):
+                        data = data[k]
                         break
                 else:
-                    # Single object response
                     if all(isinstance(v, dict) for v in data.values()):
                         data = list(data.values())
                     else:
-                        data = [data]
+                        return Response({"result": data})
     
-            if not isinstance(data, list):
-                data = []
+            return Response({"data": data})
     
-            return Response({
-                "meta": {
-                    "endpoint": endpoint,
-                    "count": len(data)
-                },
-                "data": data
-            })
-    
-        except requests.Timeout:
-            return Response({"error": "Upstream API timeout"}, status=status.HTTP_504_GATEWAY_TIMEOUT)
         except requests.RequestException as e:
             return Response({"error": str(e)}, status=status.HTTP_502_BAD_GATEWAY)
+
     
     
     # ---------- QUICKBOOKS EXECUTOR ----------
