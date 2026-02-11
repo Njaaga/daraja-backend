@@ -131,6 +131,8 @@ class ApiDataSourceSerializer(serializers.ModelSerializer):
             "created_at",
             "tenant_id",
             "tenant_name",
+            "provider",           # 🔥 Add this
+            "realm_id",           # Optional for QB
         ]
         read_only_fields = [
             "created_by",
