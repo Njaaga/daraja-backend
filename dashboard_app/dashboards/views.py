@@ -701,43 +701,108 @@ class DatasetViewSet(viewsets.ModelViewSet):
         return self._run_dataset(dataset)
 
     # ---------- Internal Dataset Runner ----------
-    def _run_dataset(self, dataset):
-        source = dataset.api_source
-        endpoint = dataset.endpoint or ""
-        url = urljoin(source.base_url.rstrip("/") + "/", endpoint.lstrip("/"))
+def _run_dataset(self, dataset):
+    source = dataset.api_source
 
-        params = dataset.query_params or {}
-        headers = {}
+    # ---------- QUICKBOOKS DATASETS ----------
+    if getattr(source, "provider", "").lower() == "quickbooks" and getattr(dataset, "entity", None):
+        return self._run_quickbooks_dataset(dataset)
 
-        # Handle API auth types
-        if source.auth_type == "API_KEY_HEADER" and source.api_key:
-            headers[source.api_key_header] = source.api_key
-        elif source.auth_type == "BEARER" and source.api_key:
-            headers["Authorization"] = f"Bearer {source.api_key}"
-        elif source.auth_type == "API_KEY_QUERY" and source.api_key:
-            params.update({source.api_key_header: source.api_key})
+    # ---------- GENERIC REST DATASETS ----------
+    endpoint = dataset.endpoint or ""
+    url = urljoin(source.base_url.rstrip("/") + "/", endpoint.lstrip("/"))
 
-        try:
-            resp = requests.get(url, headers=headers, params=params, timeout=15)
-            resp.raise_for_status()
-            data = resp.json()
+    params = dataset.query_params or {}
+    headers = {}
 
-            # Normalize response to list of dicts
-            if isinstance(data, dict):
-                for k in ("results", "data", "rows"):
-                    if k in data and isinstance(data[k], list):
-                        data = data[k]
-                        break
+    # ---------- AUTH HANDLING ----------
+    if source.auth_type == "API_KEY_HEADER" and source.api_key:
+        headers[source.api_key_header] = source.api_key
+    elif source.auth_type == "BEARER" and source.api_key:
+        headers["Authorization"] = f"Bearer {source.api_key}"
+    elif source.auth_type == "API_KEY_QUERY" and source.api_key:
+        params[source.api_key_header] = source.api_key
+
+    try:
+        resp = requests.get(url, headers=headers, params=params, timeout=15)
+        resp.raise_for_status()
+        data = resp.json()
+
+        # ---------- NORMALIZE RESPONSE ----------
+        if isinstance(data, dict):
+            for key in ("results", "data", "rows", "items"):
+                if key in data and isinstance(data[key], list):
+                    data = data[key]
+                    break
+            else:
+                # Single object response
+                if all(isinstance(v, dict) for v in data.values()):
+                    data = list(data.values())
                 else:
-                    if all(isinstance(v, dict) for v in data.values()):
-                        data = list(data.values())
-                    else:
-                        return Response({"result": data})
+                    data = [data]
 
-            return Response({"data": data})
+        if not isinstance(data, list):
+            data = []
 
-        except requests.RequestException as e:
-            return Response({"error": str(e)}, status=status.HTTP_502_BAD_GATEWAY)
+        return Response({
+            "meta": {
+                "endpoint": endpoint,
+                "count": len(data)
+            },
+            "data": data
+        })
+
+    except requests.Timeout:
+        return Response({"error": "Upstream API timeout"}, status=status.HTTP_504_GATEWAY_TIMEOUT)
+    except requests.RequestException as e:
+        return Response({"error": str(e)}, status=status.HTTP_502_BAD_GATEWAY)
+
+
+# ---------- QUICKBOOKS EXECUTOR ----------
+def _run_quickbooks_dataset(self, dataset):
+    source = dataset.api_source
+    qb = QuickBooksClient(source)  # your QB client
+
+    fields = getattr(dataset, "fields", None) or ["Id"]
+    entity = getattr(dataset, "entity", None)
+    filters = getattr(dataset, "filters", None) or {}
+
+    field_clause = ", ".join(fields)
+    query = f"SELECT {field_clause} FROM {entity}"
+
+    where_clauses = []
+
+    # Date filter
+    if filters.get("date_field") and filters.get("from") and filters.get("to"):
+        where_clauses.append(
+            f"{filters['date_field']} BETWEEN '{filters['from']}' AND '{filters['to']}'"
+        )
+
+    # Generic equality filters
+    for key, value in filters.get("equals", {}).items():
+        where_clauses.append(f"{key} = '{value}'")
+
+    if where_clauses:
+        query += " WHERE " + " AND ".join(where_clauses)
+
+    try:
+        data = qb.query(query)  # should return list of dicts
+
+        if not isinstance(data, list):
+            data = []
+
+        return Response({
+            "meta": {
+                "entity": entity,
+                "fields": fields,
+                "count": len(data)
+            },
+            "data": data
+        })
+
+    except Exception as e:
+        return Response({"error": f"QuickBooks query failed: {str(e)}"}, status=status.HTTP_502_BAD_GATEWAY)
+
         
 
     def destroy(self, request, *args, **kwargs):
