@@ -1,11 +1,13 @@
-from urllib.parse import quote
-from django.conf import settings
 from django.shortcuts import redirect
+from django.conf import settings
+from django.utils import timezone
 from django.http import JsonResponse
 import requests
-from django.utils import timezone
-from .models import ApiDataSource
+import base64
+
+from dashboards.models import ApiDataSource  # ✅ import from dashboards
 from tenants.models import Tenant
+from tenants.middleware import _thread_locals
 
 # -----------------------------
 # Connect: Redirect to Intuit OAuth
