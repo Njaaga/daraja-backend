@@ -175,7 +175,6 @@ class Dataset(models.Model):
     fields = models.JSONField(default=list, blank=True)       # ["Id", "TotalAmt"]
     filters = models.JSONField(default=dict, blank=True)      # dates, status, etc.
 
-    tenant = models.ForeignKey(Tenant, on_delete=models.CASCADE)
     created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True)
     created_at = models.DateTimeField(default=timezone.now)
 
