@@ -627,48 +627,30 @@ class ApiDataSourceViewSet(viewsets.ModelViewSet):
         return Response({"success": True})
 
     # ---------------- QuickBooks Entity Fields Endpoint ----------------
+    @action(detail=True, methods=["get"], url_path="entity_fields/(?P<entity>[^/.]+)")
     def entity_fields(self, request, pk=None, entity=None):
         """
-        Returns a list of fields for a given QuickBooks entity from QuickBooks Online.
+        Returns a list of fields for a given QuickBooks entity.
         """
         api_source = self.get_object()
-    
+
         if not api_source.provider or api_source.provider.lower() != "quickbooks":
             return Response(
                 {"error": "Not a QuickBooks API source."},
                 status=status.HTTP_400_BAD_REQUEST
             )
-    
-        if not api_source.bearer_token or not api_source.base_url:
-            return Response(
-                {"error": "QuickBooks API source missing token or base URL."},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-    
-        url = f"{api_source.base_url}/query"
-        headers = {
-            "Authorization": f"Bearer {api_source.bearer_token}",
-            "Accept": "application/json",
-        }
-        query = f"SELECT * FROM {entity} MAXRESULTS 1"
-    
-        try:
-            resp = requests.get(url, headers=headers, params={"query": query}, timeout=20)
-            resp.raise_for_status()
-            data = resp.json()
-    
-            # QuickBooks QueryResponse returns {EntityName: [records]}
-            records = data.get("QueryResponse", {}).get(entity, [])
-            if not records:
-                return Response({"fields": []})
-    
-            # Use first record to extract fields
-            fields = list(records[0].keys())
-            return Response({"fields": fields})
-    
-        except requests.RequestException as e:
-            return Response({"error": str(e)}, status=502)
 
+        # Placeholder fields (replace with live QB fetch later)
+        placeholder_fields = {
+            "Invoice": ["Id", "CustomerRef", "TxnDate", "TotalAmt", "Balance"],
+            "Customer": ["Id", "DisplayName", "PrimaryEmailAddr", "Phone"],
+            "Account": ["Id", "Name", "AccountType", "AccountSubType"],
+            "Payment": ["Id", "CustomerRef", "TxnDate", "Amount", "PaymentMethodRef"],
+        }
+
+        fields = placeholder_fields.get(entity, [])
+        return Response({"fields": fields}, status=status.HTTP_200_OK)
+        
 # ---------- Datasets ----------
 class DatasetViewSet(viewsets.ModelViewSet):
     """
