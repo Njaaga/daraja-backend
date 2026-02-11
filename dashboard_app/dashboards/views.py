@@ -626,54 +626,71 @@ class ApiDataSourceViewSet(viewsets.ModelViewSet):
 
 
     # ---------------- QuickBooks Entity Fields + Mock Data ----------------
-    @action(detail=True, methods=["get"], url_path="entity_fields/(?P<entity>[^/.]+)")
-    def entity_fields(self, request, pk=None, entity=None):
+    @action(detail=True, methods=["get"], url_path="entity_fields")
+    def entity_fields(self, request, pk=None):
         """
-        Returns a list of fields and mock rows for a given QuickBooks entity.
+        Returns available entities for QuickBooks
         """
         api_source = self.get_object()
 
-        if not api_source.provider or api_source.provider.lower() != "quickbooks":
-            return Response({"error": "Not a QuickBooks API source."}, status=status.HTTP_400_BAD_REQUEST)
+        if api_source.provider.lower() != "quickbooks":
+            return Response(
+                {"error": "Not a QuickBooks source"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
 
-        # Mock fields + rows
-        placeholder_data = {
-            "Customer": {
-                "fields": ["Id", "DisplayName", "PrimaryEmailAddr", "Phone"],
-                "rows": [
-                    {"Id": "1", "DisplayName": "Alice Smith", "PrimaryEmailAddr": "alice@example.com", "Phone": "555-1111"},
-                    {"Id": "2", "DisplayName": "Bob Johnson", "PrimaryEmailAddr": "bob@example.com", "Phone": "555-2222"},
-                    {"Id": "3", "DisplayName": "Charlie Davis", "PrimaryEmailAddr": "charlie@example.com", "Phone": "555-3333"},
-                ],
-            },
-            "Invoice": {
-                "fields": ["Id", "CustomerRef", "TxnDate", "TotalAmt", "Balance"],
-                "rows": [
-                    {"Id": "101", "CustomerRef": "1", "TxnDate": "2026-02-01", "TotalAmt": 100, "Balance": 20},
-                    {"Id": "102", "CustomerRef": "2", "TxnDate": "2026-02-03", "TotalAmt": 200, "Balance": 50},
-                ],
-            },
-            "Account": {
-                "fields": ["Id", "Name", "AccountType", "AccountSubType"],
-                "rows": [
-                    {"Id": "5001", "Name": "Cash", "AccountType": "Bank", "AccountSubType": "CashOnHand"},
-                    {"Id": "5002", "Name": "Accounts Receivable", "AccountType": "Asset", "AccountSubType": "AccountsReceivable"},
-                ],
-            },
-            "Payment": {
-                "fields": ["Id", "CustomerRef", "TxnDate", "Amount", "PaymentMethodRef"],
-                "rows": [
-                    {"Id": "9001", "CustomerRef": "1", "TxnDate": "2026-02-02", "Amount": 50, "PaymentMethodRef": "Check"},
-                    {"Id": "9002", "CustomerRef": "2", "TxnDate": "2026-02-04", "Amount": 150, "PaymentMethodRef": "CreditCard"},
-                ],
-            },
+        return Response({
+            "Customer": ["Id", "DisplayName", "PrimaryEmailAddr", "Phone"],
+            "Invoice": ["Id", "CustomerRef", "TxnDate", "TotalAmt", "Balance"],
+            "Account": ["Id", "Name", "AccountType", "AccountSubType"],
+            "Payment": ["Id", "CustomerRef", "TxnDate", "Amount"]
+        })
+
+
+    @action(
+        detail=True,
+        methods=["get"],
+        url_path=r"entity_fields/(?P<entity>[^/.]+)"
+    )
+    def entity_fields_data(self, request, pk=None, entity=None):
+        """
+        Returns fields + MOCK DATA for a specific entity
+        """
+        api_source = self.get_object()
+
+        if api_source.provider.lower() != "quickbooks":
+            return Response(
+                {"error": "Not a QuickBooks source"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        ENTITY_MAP = {
+            "Customer": ["Id", "DisplayName", "PrimaryEmailAddr", "Phone"],
+            "Invoice": ["Id", "CustomerRef", "TxnDate", "TotalAmt", "Balance"],
+            "Account": ["Id", "Name", "AccountType", "AccountSubType"],
+            "Payment": ["Id", "CustomerRef", "TxnDate", "Amount"],
         }
 
-        entity_data = placeholder_data.get(entity)
-        if not entity_data:
-            return Response({"fields": [], "rows": []}, status=status.HTTP_200_OK)
+        fields = ENTITY_MAP.get(entity)
+        if not fields:
+            return Response(
+                {"error": "Unknown entity"},
+                status=status.HTTP_404_NOT_FOUND
+            )
 
-        return Response({"fields": entity_data["fields"], "rows": entity_data["rows"]}, status=status.HTTP_200_OK)
+        # MOCK DATA so charts work
+        rows = []
+        for i in range(10):
+            row = {}
+            for field in fields:
+                row[field] = f"{field}_{i+1}"
+            rows.append(row)
+
+        return Response({
+            "entity": entity,
+            "fields": fields,
+            "data": rows
+        })
 
 
     # ---------------- QuickBooks Mock Data for Dataset Preview ----------------
