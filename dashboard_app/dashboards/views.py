@@ -629,49 +629,51 @@ class ApiDataSourceViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["get"], url_path="entity_fields/(?P<entity>[^/.]+)")
     def entity_fields(self, request, pk=None, entity=None):
         """
-        Returns fields + mock data for a given QuickBooks entity.
+        Returns a list of fields and mock rows for a given QuickBooks entity.
         """
         api_source = self.get_object()
-    
-        if not api_source.provider or api_source.provider.lower() != "quickbooks":
-            return Response(
-                {"error": "Not a QuickBooks API source."},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-    
-        # Fields
-        placeholder_fields = {
-            "Invoice": ["Id", "CustomerRef", "TxnDate", "TotalAmt", "Balance"],
-            "Customer": ["Id", "DisplayName", "PrimaryEmailAddr", "Phone"],
-            "Account": ["Id", "Name", "AccountType", "AccountSubType"],
-            "Payment": ["Id", "CustomerRef", "TxnDate", "Amount", "PaymentMethodRef"],
-        }
-    
-        # Mock rows for testing
-        placeholder_data = {
-            "Invoice": [
-                {"Id": 1, "CustomerRef": "CUST-001", "TxnDate": "2026-02-11", "TotalAmt": 1200, "Balance": 200},
-                {"Id": 2, "CustomerRef": "CUST-002", "TxnDate": "2026-02-10", "TotalAmt": 800, "Balance": 0},
-            ],
-            "Customer": [
-                {"Id": 1, "DisplayName": "Acme Corp", "PrimaryEmailAddr": "contact@acme.com", "Phone": "123456789"},
-                {"Id": 2, "DisplayName": "Beta Ltd", "PrimaryEmailAddr": "hello@beta.com", "Phone": "987654321"},
-            ],
-            "Account": [
-                {"Id": 1, "Name": "Cash", "AccountType": "Bank", "AccountSubType": "Checking"},
-                {"Id": 2, "Name": "Accounts Receivable", "AccountType": "AccountsReceivable", "AccountSubType": "CurrentAssets"},
-            ],
-            "Payment": [
-                {"Id": 1, "CustomerRef": "CUST-001", "TxnDate": "2026-02-11", "Amount": 500, "PaymentMethodRef": "Check"},
-                {"Id": 2, "CustomerRef": "CUST-002", "TxnDate": "2026-02-10", "Amount": 800, "PaymentMethodRef": "CreditCard"},
-            ],
-        }
-    
-        fields = placeholder_fields.get(entity, [])
-        data = placeholder_data.get(entity, [])
-    
-        return Response({"fields": fields, "data": data}, status=status.HTTP_200_OK)
 
+        if not api_source.provider or api_source.provider.lower() != "quickbooks":
+            return Response({"error": "Not a QuickBooks API source."}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Mock fields + rows
+        placeholder_data = {
+            "Customer": {
+                "fields": ["Id", "DisplayName", "PrimaryEmailAddr", "Phone"],
+                "rows": [
+                    {"Id": "1", "DisplayName": "Alice Smith", "PrimaryEmailAddr": "alice@example.com", "Phone": "555-1111"},
+                    {"Id": "2", "DisplayName": "Bob Johnson", "PrimaryEmailAddr": "bob@example.com", "Phone": "555-2222"},
+                    {"Id": "3", "DisplayName": "Charlie Davis", "PrimaryEmailAddr": "charlie@example.com", "Phone": "555-3333"},
+                ],
+            },
+            "Invoice": {
+                "fields": ["Id", "CustomerRef", "TxnDate", "TotalAmt", "Balance"],
+                "rows": [
+                    {"Id": "101", "CustomerRef": "1", "TxnDate": "2026-02-01", "TotalAmt": 100, "Balance": 20},
+                    {"Id": "102", "CustomerRef": "2", "TxnDate": "2026-02-03", "TotalAmt": 200, "Balance": 50},
+                ],
+            },
+            "Account": {
+                "fields": ["Id", "Name", "AccountType", "AccountSubType"],
+                "rows": [
+                    {"Id": "5001", "Name": "Cash", "AccountType": "Bank", "AccountSubType": "CashOnHand"},
+                    {"Id": "5002", "Name": "Accounts Receivable", "AccountType": "Asset", "AccountSubType": "AccountsReceivable"},
+                ],
+            },
+            "Payment": {
+                "fields": ["Id", "CustomerRef", "TxnDate", "Amount", "PaymentMethodRef"],
+                "rows": [
+                    {"Id": "9001", "CustomerRef": "1", "TxnDate": "2026-02-02", "Amount": 50, "PaymentMethodRef": "Check"},
+                    {"Id": "9002", "CustomerRef": "2", "TxnDate": "2026-02-04", "Amount": 150, "PaymentMethodRef": "CreditCard"},
+                ],
+            },
+        }
+
+        entity_data = placeholder_data.get(entity)
+        if not entity_data:
+            return Response({"fields": [], "rows": []}, status=status.HTTP_200_OK)
+
+        return Response({"fields": entity_data["fields"], "rows": entity_data["rows"]}, status=status.HTTP_200_OK)
 
 
     # ---------------- QuickBooks Mock Data for Dataset Preview ----------------
