@@ -627,15 +627,10 @@ class ApiDataSourceViewSet(viewsets.ModelViewSet):
         return Response({"success": True})
 
     # ---------------- QuickBooks Entity Fields Endpoint ----------------
-    @action(
-        detail=True,
-        methods=["get"],
-        url_path=r"entities/(?P<entity>[^/.]+)/fields"
-    )
+    @action(detail=True, methods=["get"], url_path="entity_fields/(?P<entity>[^/.]+)")
     def entity_fields(self, request, pk=None, entity=None):
         """
         Returns a list of fields for a given QuickBooks entity.
-        Placeholder fields for testing.
         """
         api_source = self.get_object()
 
@@ -645,7 +640,7 @@ class ApiDataSourceViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        # Placeholder fields for testing
+        # Placeholder fields (replace with live QB fetch later)
         placeholder_fields = {
             "Invoice": ["Id", "CustomerRef", "TxnDate", "TotalAmt", "Balance"],
             "Customer": ["Id", "DisplayName", "PrimaryEmailAddr", "Phone"],
@@ -654,7 +649,7 @@ class ApiDataSourceViewSet(viewsets.ModelViewSet):
         }
 
         fields = placeholder_fields.get(entity, [])
-        return JsonResponse(fields, safe=False)
+        return Response({"fields": fields}, status=status.HTTP_200_OK)
         
 # ---------- Datasets ----------
 class DatasetViewSet(viewsets.ModelViewSet):
