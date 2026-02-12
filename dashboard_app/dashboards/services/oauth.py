@@ -14,7 +14,7 @@ def refresh_quickbooks_token(api_source):
         ),
         headers={"Accept": "application/json"},
         data={
-            "grant_type": "refresh_token",
+            "grant_type": "oauth_refresh_token",
             "refresh_token": api_source.oauth_refresh_token,
         },
     )
@@ -33,7 +33,7 @@ def refresh_quickbooks_token(api_source):
     api_source.save(
         update_fields=[
             "bearer_token",
-            "refresh_token",
-            "token_expires_at",
+            "oauth_refresh_token",
+            "oauth_token_expires_at",
         ]
     )
