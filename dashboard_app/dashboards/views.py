@@ -55,7 +55,7 @@ from rest_framework.exceptions import APIException
 import requests
 from django.shortcuts import redirect
 from django.contrib.auth.decorators import login_required
-
+from dashboards.api_client import execute_request
 
 # ---------------------------
 # USERS
@@ -739,79 +739,42 @@ class DatasetViewSet(viewsets.ModelViewSet):
         headers = {}
     
         # ---------------- QuickBooks ----------------
-        if source.provider == "quickbooks":
-            if not source.bearer_token or not source.base_url:
-                return Response(
-                    {"error": "QuickBooks source missing access token or base URL."},
-                    status=status.HTTP_400_BAD_REQUEST
+        try:
+            # ---------------- QuickBooks ----------------
+            if source.provider == "quickbooks":
+                entity = getattr(dataset, "entity", None) or "Customer"
+                fields = getattr(dataset, "fields", []) or ["*"]
+    
+                query = f"SELECT {', '.join(fields)} FROM {entity}"
+    
+                # Apply filters
+                filters = getattr(dataset, "filters", {})
+                date_field = filters.get("date_field")
+                if date_field and filters.get("from") and filters.get("to"):
+                    query += f" WHERE {date_field} BETWEEN '{filters['from']}' AND '{filters['to']}'"
+    
+                equals = filters.get("equals", {})
+                for k, v in equals.items():
+                    if "WHERE" in query:
+                        query += f" AND {k}='{v}'"
+                    else:
+                        query += f" WHERE {k}='{v}'"
+    
+                # Execute request via centralized function
+                data = execute_request(
+                    api_source=source,
+                    endpoint="query",
+                    method="GET",
+                    params={"query": query},
                 )
     
-            headers = {
-                "Authorization": f"Bearer {source.bearer_token}",
-                "Accept": "application/json",
-                "Content-Type": "application/text"
-            }
-    
-            entity = getattr(dataset, "entity", None) or "Customer"
-            fields = getattr(dataset, "fields", None) or ["*"]
-    
-            # Build QBO SQL
-            query = f"SELECT {', '.join(fields)} FROM {entity}"
-    
-            filters = getattr(dataset, "filters", {}) or {}
-    
-            where_clauses = []
-    
-            # Date filter
-            if (
-                filters.get("date_field")
-                and filters.get("from")
-                and filters.get("to")
-            ):
-                where_clauses.append(
-                    f"{filters['date_field']} BETWEEN '{filters['from']}' AND '{filters['to']}'"
-                )
-    
-            # Equals filters
-            for k, v in filters.get("equals", {}).items():
-                where_clauses.append(f"{k} = '{v}'")
-    
-            if where_clauses:
-                query += " WHERE " + " AND ".join(where_clauses)
-    
-            url = f"{source.base_url}/query"
-            params["query"] = query
-    
-            try:
-                resp = requests.get(
-                    url,
-                    headers=headers,
-                    params=params,
-                    timeout=20
-                )
-                resp.raise_for_status()
-                payload = resp.json()
-    
-            except requests.RequestException as e:
-                return Response(
-                    {"error": str(e)},
-                    status=status.HTTP_502_BAD_GATEWAY
-                )
-    
-            # -------- Normalize QuickBooks response --------
-            qr = payload.get("QueryResponse", {})
-            if not qr:
-                return Response({"data": []})
-    
-            entity_key = next(iter(qr.keys()))
-            rows = qr.get(entity_key, [])
-    
-            return Response({
-                "entity": entity,
-                "fields": list(rows[0].keys()) if rows else [],
-                "data": rows,
-                "mock": False
-            })
+                # Normalize QuickBooks response
+                query_response = data.get("QueryResponse", {})
+                if query_response:
+                    key = next(iter(query_response.keys()))
+                    data = query_response.get(key, [])
+                else:
+                    data = []
 
     
         # ---------------- Generic REST APIs ----------------
