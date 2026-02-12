@@ -723,6 +723,9 @@ class DatasetViewSet(viewsets.ModelViewSet):
             name="__adhoc__",
             api_source=source,
             endpoint=endpoint,
+            entity=request.data.get("entity"),
+            fields=request.data.get("fields", []),
+            filters=request.data.get("filters", {}),
             query_params=query_params
         )
         return self._run_dataset(dataset)
