@@ -729,15 +729,21 @@ class DatasetViewSet(viewsets.ModelViewSet):
 
     # ---------- Internal Dataset Runner ----------
     def _run_dataset(self, dataset):
+        """
+        Executes a dataset against its data source.
+        QuickBooks queries will use entity & fields saved in the dataset table.
+        Generic REST APIs are handled as before.
+        """
         source = dataset.api_source
         params = dataset.query_params.copy() if dataset.query_params else {}
         headers = {}
     
         # ---------------- QuickBooks ----------------
-        if source.provider == "quickbooks":
+        if source.provider.lower() == "quickbooks":
+            # Ensure credentials
             if not source.bearer_token or not source.base_url:
                 return Response(
-                    {"error": "QuickBooks source missing access token or base URL."},
+                    {"error": "QuickBooks access token or base URL missing."},
                     status=status.HTTP_400_BAD_REQUEST
                 )
     
@@ -754,13 +760,26 @@ class DatasetViewSet(viewsets.ModelViewSet):
             headers = {
                 "Authorization": f"Bearer {source.bearer_token}",
                 "Accept": "application/json",
-                "Content-Type": "application/text"
+                "Content-Type": "application/text",
             }
     
-            entity = getattr(dataset, "entity", None) or "Customer"
-            fields = getattr(dataset, "fields", None) or ["*"]
+            # Use entity & fields from dataset DB table
+            entity = getattr(dataset, "entity", None)
+            fields = getattr(dataset, "fields", None)
     
-            # Build QBO SQL
+            if not entity:
+                return Response(
+                    {"error": "QuickBooks entity must be selected."},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+    
+            if not fields or not isinstance(fields, list) or len(fields) == 0:
+                return Response(
+                    {"error": "Select at least one field for QuickBooks entity."},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+    
+            # Build QuickBooks SQL query
             query = f"SELECT {', '.join(fields)} FROM {entity}"
     
             filters = getattr(dataset, "filters", {}) or {}
@@ -788,23 +807,34 @@ class DatasetViewSet(viewsets.ModelViewSet):
                 payload = resp.json()
             except requests.RequestException as e:
                 return Response(
-                    {"error": str(e)},
+                    {"error": "QuickBooks request failed", "details": str(e), "query": query},
                     status=status.HTTP_502_BAD_GATEWAY
                 )
     
-            # Normalize QuickBooks response
-            qr = payload.get("QueryResponse", {})
-            if not qr:
-                return Response({"data": []})
+            # Handle QuickBooks logical errors
+            if "Fault" in payload:
+                return Response(
+                    {"error": "QuickBooks API error", "details": payload["Fault"], "query": query},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
     
-            entity_key = next(iter(qr.keys()))
-            rows = qr.get(entity_key, [])
-            
+            query_response = payload.get("QueryResponse", {})
+            if not query_response:
+                return Response({
+                    "entity": entity,
+                    "fields": fields,
+                    "count": 0,
+                    "data": []
+                })
+    
+            entity_key = next(iter(query_response.keys()), None)
+            rows = query_response.get(entity_key, []) if entity_key else []
+    
             return Response({
                 "entity": entity,
-                "fields": list(rows[0].keys()) if rows else [],
+                "fields": fields,
+                "count": len(rows),
                 "data": rows,
-                "mock": False
             })
     
         # ---------------- Generic REST APIs ----------------
@@ -826,11 +856,9 @@ class DatasetViewSet(viewsets.ModelViewSet):
                 resp.raise_for_status()
                 data = resp.json()
             except requests.RequestException as e:
-                return Response(
-                    {"error": str(e)},
-                    status=status.HTTP_502_BAD_GATEWAY
-                )
+                return Response({"error": str(e)}, status=status.HTTP_502_BAD_GATEWAY)
     
+            # Flatten standard API responses
             if isinstance(data, dict):
                 for k in ("results", "data", "rows"):
                     if k in data and isinstance(data[k], list):
@@ -838,6 +866,7 @@ class DatasetViewSet(viewsets.ModelViewSet):
                         break
     
             return Response({"data": data})
+
 
     
     
