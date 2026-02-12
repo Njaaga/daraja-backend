@@ -15,7 +15,7 @@ def refresh_quickbooks_token(api_source):
         headers={"Accept": "application/json"},
         data={
             "grant_type": "refresh_token",
-            "refresh_token": api_source.refresh_token,
+            "refresh_token": api_source.oauth_refresh_token,
         },
     )
 
@@ -24,7 +24,7 @@ def refresh_quickbooks_token(api_source):
 
     api_source.bearer_token = data["access_token"]
     api_source.refresh_token = data.get(
-        "refresh_token", api_source.refresh_token
+        "refresh_token", api_source.oauth_refresh_token
     )
     api_source.token_expires_at = (
         timezone.now()
