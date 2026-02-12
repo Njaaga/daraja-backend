@@ -731,174 +731,152 @@ class DatasetViewSet(viewsets.ModelViewSet):
     def _run_dataset(dataset, source):
         """
         Executes a dataset against its data source.
-        Currently supports QuickBooks datasets.
+        Supports QuickBooks and generic REST APIs.
         """
     
-        # -----------------------------
-        # Validate source
-        # -----------------------------
-        if source.provider != "quickbooks":
-            return Response(
-                {"error": f"Unsupported provider: {source.provider}"},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+        # =====================================================
+        # QUICKBOOKS DATASETS
+        # =====================================================
+        if source.provider == "quickbooks":
     
-        if not source.bearer_token:
-            return Response(
-                {"error": "QuickBooks access token missing."},
-                status=status.HTTP_401_UNAUTHORIZED,
-            )
+            if not source.bearer_token:
+                return Response(
+                    {"error": "QuickBooks access token missing"},
+                    status=status.HTTP_401_UNAUTHORIZED,
+                )
     
-        if not source.base_url:
-            return Response(
-                {"error": "QuickBooks base URL missing."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+            if not source.base_url:
+                return Response(
+                    {"error": "QuickBooks base URL missing"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
     
-        # -----------------------------
-        # Validate dataset
-        # -----------------------------
-        entity = dataset.entity
-        if not entity:
-            return Response(
-                {"error": "Dataset entity is required (e.g. Customer, Invoice)."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+            entity = dataset.entity
+            if not entity:
+                return Response(
+                    {"error": "Dataset entity is required (e.g. Customer, Invoice)"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
     
-        fields = list(dataset.fields or [])
-        if not fields:
-            return Response(
-                {"error": "Select at least one field to query QuickBooks."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+            fields = list(dataset.fields or [])
+            if not fields:
+                return Response(
+                    {"error": "Select at least one field"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
     
-        # Ensure unique fields (QB is picky)
-        fields = list(dict.fromkeys(fields))
+            fields = list(dict.fromkeys(fields))  # unique
     
-        # -----------------------------
-        # Build QuickBooks SQL
-        # -----------------------------
-        query = f"SELECT {', '.join(fields)} FROM {entity}"
+            # Build QB query
+            query = f"SELECT {', '.join(fields)} FROM {entity}"
     
-        filters = dataset.filters or {}
-        where_clauses = []
+            filters = dataset.filters or {}
+            where_clauses = []
     
-        # Date range filter
-        if (
-            filters.get("date_field")
-            and filters.get("from")
-            and filters.get("to")
-        ):
-            where_clauses.append(
-                f"{filters['date_field']} >= '{filters['from']}' "
-                f"AND {filters['date_field']} <= '{filters['to']}'"
-            )
+            if filters.get("date_field") and filters.get("from") and filters.get("to"):
+                where_clauses.append(
+                    f"{filters['date_field']} >= '{filters['from']}' "
+                    f"AND {filters['date_field']} <= '{filters['to']}'"
+                )
     
-        # Equality filters
-        for key, value in filters.get("equals", {}).items():
-            where_clauses.append(f"{key} = '{value}'")
+            for key, value in filters.get("equals", {}).items():
+                where_clauses.append(f"{key} = '{value}'")
     
-        if where_clauses:
-            query += " WHERE " + " AND ".join(where_clauses)
+            if where_clauses:
+                query += " WHERE " + " AND ".join(where_clauses)
     
-        # -----------------------------
-        # Execute request
-        # -----------------------------
-        headers = {
-            "Authorization": f"Bearer {source.bearer_token}",
-            "Accept": "application/json",
-            "Content-Type": "application/text",
-        }
+            headers = {
+                "Authorization": f"Bearer {source.bearer_token}",
+                "Accept": "application/json",
+                "Content-Type": "application/text",
+            }
     
-        url = f"{source.base_url}/query"
-        params = {"query": query}
+            url = f"{source.base_url}/query"
     
-        try:
-            response = requests.get(
-                url,
-                headers=headers,
-                params=params,
-                timeout=20,
-            )
-            response.raise_for_status()
-            payload = response.json()
-        except requests.HTTPError as e:
+            try:
+                resp = requests.get(
+                    url,
+                    headers=headers,
+                    params={"query": query},
+                    timeout=20,
+                )
+                resp.raise_for_status()
+                payload = resp.json()
+            except requests.RequestException as e:
+                return Response(
+                    {
+                        "error": "QuickBooks request failed",
+                        "details": str(e),
+                        "query": query,
+                    },
+                    status=status.HTTP_502_BAD_GATEWAY,
+                )
+    
+            # QB logical errors may still be 200
+            if "Fault" in payload:
+                return Response(
+                    {
+                        "error": "QuickBooks API error",
+                        "details": payload["Fault"],
+                        "query": query,
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+    
+            query_response = payload.get("QueryResponse", {})
+    
+            if not query_response:
+                return Response(
+                    {"entity": entity, "fields": fields, "data": []}
+                )
+    
+            entity_key = next(iter(query_response.keys()), None)
+            rows = query_response.get(entity_key, []) if entity_key else []
+    
             return Response(
                 {
-                    "error": "QuickBooks query failed",
-                    "status_code": response.status_code,
-                    "details": response.text,
-                    "query": query,
-                },
-                status=status.HTTP_502_BAD_GATEWAY,
+                    "entity": entity,
+                    "fields": fields,
+                    "count": len(rows),
+                    "data": rows,
+                }
             )
+    
+        # =====================================================
+        # GENERIC REST DATASETS
+        # =====================================================
+        headers = {}
+        params = {}
+    
+        url = urljoin(
+            source.base_url.rstrip("/") + "/",
+            (dataset.endpoint or "").lstrip("/"),
+        )
+    
+        if source.auth_type == "API_KEY_HEADER" and source.api_key:
+            headers[source.api_key_header] = source.api_key
+        elif source.auth_type == "BEARER" and source.api_key:
+            headers["Authorization"] = f"Bearer {source.api_key}"
+        elif source.auth_type == "API_KEY_QUERY" and source.api_key:
+            params[source.api_key_header] = source.api_key
+    
+        try:
+            resp = requests.get(url, headers=headers, params=params, timeout=20)
+            resp.raise_for_status()
+            data = resp.json()
         except requests.RequestException as e:
             return Response(
                 {"error": str(e)},
                 status=status.HTTP_502_BAD_GATEWAY,
             )
     
-        # -----------------------------
-        # Parse QB response
-        # -----------------------------
-        query_response = payload.get("QueryResponse", {})
+        if isinstance(data, dict):
+            for key in ("results", "data", "rows"):
+                if key in data and isinstance(data[key], list):
+                    data = data[key]
+                    break
     
-        if not query_response:
-            return Response(
-                {
-                    "entity": entity,
-                    "fields": fields,
-                    "data": [],
-                }
-            )
-    
-        # QB returns entity name as key (Customer, Invoice, etc.)
-        entity_key = next(iter(query_response.keys()), None)
-        rows = query_response.get(entity_key, []) if entity_key else []
-    
-        # -----------------------------
-        # Final normalized response
-        # -----------------------------
-        return Response(
-            {
-                "entity": entity,
-                "fields": fields,
-                "count": len(rows),
-                "data": rows,
-            }
-        )
-    
-        # ---------------- Generic REST APIs ----------------
-        else:
-            url = urljoin(
-                source.base_url.rstrip("/") + "/",
-                (dataset.endpoint or "").lstrip("/")
-            )
-    
-            if source.auth_type == "API_KEY_HEADER" and source.api_key:
-                headers[source.api_key_header] = source.api_key
-            elif source.auth_type == "BEARER" and source.api_key:
-                headers["Authorization"] = f"Bearer {source.api_key}"
-            elif source.auth_type == "API_KEY_QUERY" and source.api_key:
-                params[source.api_key_header] = source.api_key
-    
-            try:
-                resp = requests.get(url, headers=headers, params=params, timeout=20)
-                resp.raise_for_status()
-                data = resp.json()
-            except requests.RequestException as e:
-                return Response(
-                    {"error": str(e)},
-                    status=status.HTTP_502_BAD_GATEWAY
-                )
-    
-            if isinstance(data, dict):
-                for k in ("results", "data", "rows"):
-                    if k in data and isinstance(data[k], list):
-                        data = data[k]
-                        break
-    
-            return Response({"data": data})
+        return Response({"data": data})
 
     
     
