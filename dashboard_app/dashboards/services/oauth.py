@@ -9,8 +9,8 @@ def refresh_quickbooks_token(api_source):
     response = requests.post(
         token_url,
         auth=(
-            settings.QUICKBOOKS_CLIENT_ID,
-            settings.QUICKBOOKS_CLIENT_SECRET,
+            settings.QB_CLIENT_ID,
+            settings.QB_CLIENT_SECRET,
         ),
         headers={"Accept": "application/json"},
         data={
