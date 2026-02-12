@@ -26,7 +26,7 @@ def refresh_quickbooks_token(api_source):
     api_source.refresh_token = data.get(
         "refresh_token", api_source.oauth_refresh_token
     )
-    api_source.token_expires_at = (
+    api_source.oauth_token_expires_at = (
         timezone.now()
         + timezone.timedelta(seconds=data["expires_in"])
     )
