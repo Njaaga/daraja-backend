@@ -728,10 +728,42 @@ class DatasetViewSet(viewsets.ModelViewSet):
         return self._run_dataset(dataset)
 
     # ---------- Internal Dataset Runner ----------
+def _extract_nested_value(obj, path):
+    """
+    Safely extract nested values using dot notation.
+    Example: company.name
+    """
+    value = obj
+    for part in path.split("."):
+        if isinstance(value, dict):
+            value = value.get(part)
+        else:
+            return None
+    return value
+
+
+def _apply_field_selection(rows, fields):
+    """
+    Reduce rows to selected fields while supporting nesting.
+    """
+    if not fields:
+        return rows
+
+    normalized = []
+    for row in rows:
+        selected = {}
+        for field in fields:
+            selected[field] = _extract_nested_value(row, field)
+        normalized.append(selected)
+
+    return normalized
+
+
     def _run_dataset(dataset, source):
         """
         Executes a dataset against its data source.
         Supports QuickBooks and generic REST APIs.
+        Always returns a normalized response for dashboards.
         """
     
         # =====================================================
@@ -751,35 +783,38 @@ class DatasetViewSet(viewsets.ModelViewSet):
                     status=status.HTTP_400_BAD_REQUEST,
                 )
     
-            entity = dataset.entity
-            if not entity:
+            if not dataset.entity:
                 return Response(
                     {"error": "Dataset entity is required (e.g. Customer, Invoice)"},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
     
-            fields = list(dataset.fields or [])
+            fields = list(dict.fromkeys(dataset.fields or []))
             if not fields:
                 return Response(
                     {"error": "Select at least one field"},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
     
-            fields = list(dict.fromkeys(fields))  # unique
-    
-            # Build QB query
-            query = f"SELECT {', '.join(fields)} FROM {entity}"
+            # -----------------------------
+            # Build QuickBooks Query
+            # -----------------------------
+            query = f"SELECT {', '.join(fields)} FROM {dataset.entity}"
     
             filters = dataset.filters or {}
             where_clauses = []
     
-            if filters.get("date_field") and filters.get("from") and filters.get("to"):
+            if (
+                filters.get("date_field")
+                and filters.get("from")
+                and filters.get("to")
+            ):
                 where_clauses.append(
                     f"{filters['date_field']} >= '{filters['from']}' "
                     f"AND {filters['date_field']} <= '{filters['to']}'"
                 )
     
-            for key, value in filters.get("equals", {}).items():
+            for key, value in (filters.get("equals") or {}).items():
                 where_clauses.append(f"{key} = '{value}'")
     
             if where_clauses:
@@ -791,11 +826,9 @@ class DatasetViewSet(viewsets.ModelViewSet):
                 "Content-Type": "application/text",
             }
     
-            url = f"{source.base_url}/query"
-    
             try:
                 resp = requests.get(
-                    url,
+                    f"{source.base_url}/query",
                     headers=headers,
                     params={"query": query},
                     timeout=20,
@@ -812,7 +845,6 @@ class DatasetViewSet(viewsets.ModelViewSet):
                     status=status.HTTP_502_BAD_GATEWAY,
                 )
     
-            # QB logical errors may still be 200
             if "Fault" in payload:
                 return Response(
                     {
@@ -824,23 +856,18 @@ class DatasetViewSet(viewsets.ModelViewSet):
                 )
     
             query_response = payload.get("QueryResponse", {})
-    
-            if not query_response:
-                return Response(
-                    {"entity": entity, "fields": fields, "data": []}
-                )
-    
             entity_key = next(iter(query_response.keys()), None)
             rows = query_response.get(entity_key, []) if entity_key else []
     
-            return Response(
-                {
-                    "entity": entity,
-                    "fields": fields,
+            return Response({
+                "meta": {
+                    "provider": "quickbooks",
+                    "entity": dataset.entity,
                     "count": len(rows),
-                    "data": rows,
-                }
-            )
+                },
+                "fields": fields,
+                "rows": rows,
+            })
     
         # =====================================================
         # GENERIC REST DATASETS
@@ -870,13 +897,30 @@ class DatasetViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_502_BAD_GATEWAY,
             )
     
+        # -----------------------------
+        # Normalize common API shapes
+        # -----------------------------
         if isinstance(data, dict):
-            for key in ("results", "data", "rows"):
-                if key in data and isinstance(data[key], list):
+            for key in ("results", "data", "rows", "items"):
+                if isinstance(data.get(key), list):
                     data = data[key]
                     break
     
-        return Response({"data": data})
+        if not isinstance(data, list):
+            data = []
+    
+        fields = list(dataset.fields or [])
+        rows = _apply_field_selection(data, fields)
+    
+        return Response({
+            "meta": {
+                "provider": "rest",
+                "entity": dataset.endpoint,
+                "count": len(rows),
+            },
+            "fields": fields,
+            "rows": rows,
+        })
 
     
     
