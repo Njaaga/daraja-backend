@@ -728,17 +728,16 @@ class DatasetViewSet(viewsets.ModelViewSet):
         return self._run_dataset(dataset)
 
     # ---------- Internal Dataset Runner ----------
-    def _run_dataset(self, dataset):
-        """
-        Run a dataset using the saved ApiDataSource.
-        QuickBooks: uses bearer_token and base_url from DB.
-        Generic REST: uses stored credentials from DB.
-        """
-        source = dataset.api_source
-        params = dataset.query_params.copy() if dataset.query_params else {}
-        headers = {}
-    
-        # ---------------- QuickBooks ----------------
+def _run_dataset(self, dataset):
+    """
+    Run a dataset using the saved ApiDataSource.
+    QuickBooks: uses bearer_token and base_url from DB, auto-refreshes token.
+    Generic REST: uses stored credentials from DB.
+    """
+    source = dataset.api_source
+    params = dataset.query_params.copy() if dataset.query_params else {}
+    headers = {}
+
     try:
         # ---------------- QuickBooks ----------------
         if source.provider == "quickbooks":
@@ -776,49 +775,35 @@ class DatasetViewSet(viewsets.ModelViewSet):
             else:
                 data = []
 
-    
         # ---------------- Generic REST APIs ----------------
         else:
-            url = urljoin(source.base_url.rstrip("/") + "/", (dataset.endpoint or "").lstrip("/"))
-    
-            if source.auth_type == "API_KEY_HEADER" and source.api_key:
-                headers[source.api_key_header] = source.api_key
-            elif source.auth_type == "BEARER" and source.api_key:
-                headers["Authorization"] = f"Bearer {source.api_key}"
-            elif source.auth_type == "API_KEY_QUERY" and source.api_key:
-                params.update({source.api_key_header: source.api_key})
-    
-        # ---------------- Execute request ----------------
-        try:
-            resp = requests.get(url, headers=headers, params=params, timeout=20)
-            resp.raise_for_status()
-            data = resp.json()
-    
-            # Normalize QuickBooks response
-            if source.provider == "quickbooks":
-                query_response = data.get("QueryResponse", {})
-                if query_response:
-                    key = next(iter(query_response.keys()))
-                    data = query_response.get(key, [])
-                else:
-                    data = []
-    
-            # Normalize REST responses
-            elif isinstance(data, dict):
+            endpoint = getattr(dataset, "endpoint", "")
+            data = execute_request(
+                api_source=source,
+                endpoint=endpoint,
+                method="GET",
+                params=params,
+                body=None,
+            )
+
+            # Normalize common REST responses
+            if isinstance(data, dict):
                 for k in ("results", "data", "rows"):
                     if k in data and isinstance(data[k], list):
                         data = data[k]
                         break
                 else:
+                    # fallback: convert dict values to list if all are dicts
                     if all(isinstance(v, dict) for v in data.values()):
                         data = list(data.values())
                     else:
                         return Response({"result": data})
-    
-            return Response({"data": data})
-    
-        except requests.RequestException as e:
-            return Response({"error": str(e)}, status=status.HTTP_502_BAD_GATEWAY)
+
+        return Response({"data": data})
+
+    except Exception as e:
+        # catch all errors including 401, network, etc
+        return Response({"error": str(e)}, status=status.HTTP_502_BAD_GATEWAY)
 
     
     
