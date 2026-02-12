@@ -739,42 +739,42 @@ class DatasetViewSet(viewsets.ModelViewSet):
         headers = {}
     
         # ---------------- QuickBooks ----------------
-        try:
-            # ---------------- QuickBooks ----------------
-            if source.provider == "quickbooks":
-                entity = getattr(dataset, "entity", None) or "Customer"
-                fields = getattr(dataset, "fields", []) or ["*"]
-    
-                query = f"SELECT {', '.join(fields)} FROM {entity}"
-    
-                # Apply filters
-                filters = getattr(dataset, "filters", {})
-                date_field = filters.get("date_field")
-                if date_field and filters.get("from") and filters.get("to"):
-                    query += f" WHERE {date_field} BETWEEN '{filters['from']}' AND '{filters['to']}'"
-    
-                equals = filters.get("equals", {})
-                for k, v in equals.items():
-                    if "WHERE" in query:
-                        query += f" AND {k}='{v}'"
-                    else:
-                        query += f" WHERE {k}='{v}'"
-    
-                # Execute request via centralized function
-                data = execute_request(
-                    api_source=source,
-                    endpoint="query",
-                    method="GET",
-                    params={"query": query},
-                )
-    
-                # Normalize QuickBooks response
-                query_response = data.get("QueryResponse", {})
-                if query_response:
-                    key = next(iter(query_response.keys()))
-                    data = query_response.get(key, [])
+    try:
+        # ---------------- QuickBooks ----------------
+        if source.provider == "quickbooks":
+            entity = getattr(dataset, "entity", None) or "Customer"
+            fields = getattr(dataset, "fields", []) or ["*"]
+
+            query = f"SELECT {', '.join(fields)} FROM {entity}"
+
+            # Apply filters
+            filters = getattr(dataset, "filters", {})
+            date_field = filters.get("date_field")
+            if date_field and filters.get("from") and filters.get("to"):
+                query += f" WHERE {date_field} BETWEEN '{filters['from']}' AND '{filters['to']}'"
+
+            equals = filters.get("equals", {})
+            for k, v in equals.items():
+                if "WHERE" in query:
+                    query += f" AND {k}='{v}'"
                 else:
-                    data = []
+                    query += f" WHERE {k}='{v}'"
+
+            # Execute request via centralized function
+            data = execute_request(
+                api_source=source,
+                endpoint="query",
+                method="GET",
+                params={"query": query},
+            )
+
+            # Normalize QuickBooks response
+            query_response = data.get("QueryResponse", {})
+            if query_response:
+                key = next(iter(query_response.keys()))
+                data = query_response.get(key, [])
+            else:
+                data = []
 
     
         # ---------------- Generic REST APIs ----------------
