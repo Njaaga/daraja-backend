@@ -733,54 +733,76 @@ class DatasetViewSet(viewsets.ModelViewSet):
         params = dataset.query_params.copy() if dataset.query_params else {}
         headers = {}
     
-        # ---------------- QuickBooks ----------------
+        # =====================================================
+        # QUICKBOOKS
+        # =====================================================
         if source.provider == "quickbooks":
+    
+            # ---- Hard requirements (NO FALLBACKS) ----
             if not source.bearer_token or not source.base_url:
                 return Response(
-                    {"error": "QuickBooks source missing access token or base URL."},
-                    status=status.HTTP_400_BAD_REQUEST
+                    {"error": "QuickBooks source missing access token or base URL"},
+                    status=status.HTTP_400_BAD_REQUEST,
                 )
     
-            # Refresh token if expired
-            if getattr(source, "oauth_token_expires_at", None) and source.oauth_token_expires_at <= timezone.now():
+            if not dataset.entity:
+                return Response(
+                    {"error": "QuickBooks entity is required"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+    
+            if not dataset.fields:
+                return Response(
+                    {"error": "At least one QuickBooks field must be selected"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+    
+            # ---- Refresh token if expired ----
+            if (
+                getattr(source, "oauth_token_expires_at", None)
+                and source.oauth_token_expires_at <= timezone.now()
+            ):
                 try:
                     refresh_quickbooks_token(source)
                 except requests.RequestException as e:
                     return Response(
                         {"error": f"Failed to refresh QuickBooks token: {str(e)}"},
-                        status=status.HTTP_502_BAD_GATEWAY
+                        status=status.HTTP_502_BAD_GATEWAY,
                     )
     
             headers = {
                 "Authorization": f"Bearer {source.bearer_token}",
                 "Accept": "application/json",
-                "Content-Type": "application/text"
+                "Content-Type": "application/text",
             }
     
-            entity = getattr(dataset, "entity", None) or "Customer"
-            fields = getattr(dataset, "fields", None) or ["*"]
+            # ---- ENTITY & FIELDS COME FROM FRONTEND ----
+            entity = dataset.entity
+            fields = list(dict.fromkeys(dataset.fields))  # unique fields
     
-            # Build QBO SQL
+            # ---- Build QB SQL ----
             query = f"SELECT {', '.join(fields)} FROM {entity}"
     
-            filters = getattr(dataset, "filters", {}) or {}
+            filters = dataset.filters or {}
             where_clauses = []
     
-            # Date filter
-            if filters.get("date_field") and filters.get("from") and filters.get("to"):
+            if (
+                filters.get("date_field")
+                and filters.get("from")
+                and filters.get("to")
+            ):
                 where_clauses.append(
                     f"{filters['date_field']} BETWEEN '{filters['from']}' AND '{filters['to']}'"
                 )
     
-            # Equals filters
-            for k, v in filters.get("equals", {}).items():
+            for k, v in (filters.get("equals") or {}).items():
                 where_clauses.append(f"{k} = '{v}'")
     
             if where_clauses:
                 query += " WHERE " + " AND ".join(where_clauses)
     
-            url = f"{source.base_url}/query"
             params["query"] = query
+            url = f"{source.base_url}/query"
     
             try:
                 resp = requests.get(url, headers=headers, params=params, timeout=20)
@@ -788,56 +810,77 @@ class DatasetViewSet(viewsets.ModelViewSet):
                 payload = resp.json()
             except requests.RequestException as e:
                 return Response(
-                    {"error": str(e)},
-                    status=status.HTTP_502_BAD_GATEWAY
+                    {"error": "QuickBooks request failed", "details": str(e)},
+                    status=status.HTTP_502_BAD_GATEWAY,
                 )
     
-            # Normalize QuickBooks response
-            qr = payload.get("QueryResponse", {})
-            if not qr:
-                return Response({"data": []})
+            if "Fault" in payload:
+                return Response(
+                    {
+                        "error": "QuickBooks API error",
+                        "details": payload["Fault"],
+                        "query": query,
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
     
-            entity_key = next(iter(qr.keys()))
-            rows = qr.get(entity_key, [])
+            qr = payload.get("QueryResponse", {})
+            entity_key = next(iter(qr.keys()), None)
+            rows = qr.get(entity_key, []) if entity_key else []
     
             return Response({
-                "entity": entity,
-                "fields": list(rows[0].keys()) if rows else [],
-                "data": rows,
-                "mock": False
+                "meta": {
+                    "provider": "quickbooks",
+                    "entity": entity,
+                    "count": len(rows),
+                },
+                "fields": fields,
+                "rows": rows,
             })
     
-        # ---------------- Generic REST APIs ----------------
-        else:
-            url = urljoin(
-                source.base_url.rstrip("/") + "/",
-                (dataset.endpoint or "").lstrip("/")
+        # =====================================================
+        # GENERIC REST
+        # =====================================================
+        url = urljoin(
+            source.base_url.rstrip("/") + "/",
+            (dataset.endpoint or "").lstrip("/"),
+        )
+    
+        if source.auth_type == "API_KEY_HEADER" and source.api_key:
+            headers[source.api_key_header] = source.api_key
+        elif source.auth_type == "BEARER" and source.api_key:
+            headers["Authorization"] = f"Bearer {source.api_key}"
+        elif source.auth_type == "API_KEY_QUERY" and source.api_key:
+            params[source.api_key_header] = source.api_key
+    
+        try:
+            resp = requests.get(url, headers=headers, params=params, timeout=20)
+            resp.raise_for_status()
+            data = resp.json()
+        except requests.RequestException as e:
+            return Response(
+                {"error": str(e)},
+                status=status.HTTP_502_BAD_GATEWAY,
             )
     
-            if source.auth_type == "API_KEY_HEADER" and source.api_key:
-                headers[source.api_key_header] = source.api_key
-            elif source.auth_type == "BEARER" and source.api_key:
-                headers["Authorization"] = f"Bearer {source.api_key}"
-            elif source.auth_type == "API_KEY_QUERY" and source.api_key:
-                params[source.api_key_header] = source.api_key
+        if isinstance(data, dict):
+            for k in ("results", "data", "rows", "items"):
+                if isinstance(data.get(k), list):
+                    data = data[k]
+                    break
     
-            try:
-                resp = requests.get(url, headers=headers, params=params, timeout=20)
-                resp.raise_for_status()
-                data = resp.json()
-            except requests.RequestException as e:
-                return Response(
-                    {"error": str(e)},
-                    status=status.HTTP_502_BAD_GATEWAY
-                )
+        if not isinstance(data, list):
+            data = []
     
-            if isinstance(data, dict):
-                for k in ("results", "data", "rows"):
-                    if k in data and isinstance(data[k], list):
-                        data = data[k]
-                        break
-    
-            return Response({"data": data})
+        return Response({
+            "meta": {
+                "provider": "rest",
+                "entity": dataset.endpoint,
+                "count": len(data),
+            },
+            "fields": list(dataset.fields or []),
+            "rows": data,
+        })
     
     
     # ---------- QUICKBOOKS EXECUTOR ----------
