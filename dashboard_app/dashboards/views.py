@@ -55,7 +55,6 @@ from rest_framework.exceptions import APIException
 import requests
 from django.shortcuts import redirect
 from django.contrib.auth.decorators import login_required
-from dashboards.services.request_builder import execute_request
 
 # ---------------------------
 # USERS
@@ -731,76 +730,114 @@ class DatasetViewSet(viewsets.ModelViewSet):
     def _run_dataset(self, dataset):
         source = dataset.api_source
         params = dataset.query_params.copy() if dataset.query_params else {}
+        headers = {}
     
-        # QuickBooks defaults
-        entity = getattr(dataset, "entity", None) or "Customer"
-        fields = getattr(dataset, "fields", None) or ["*"]
-        filters = getattr(dataset, "filters", {}) or {}
+        # ---------------- QuickBooks (REAL) ----------------
+        if source.provider == "quickbooks":
+            if not source.bearer_token or not source.base_url:
+                return Response(
+                    {"error": "QuickBooks source missing access token or base URL."},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
     
-        # Build QuickBooks query
-        query = f"SELECT {', '.join(fields)} FROM {entity}"
-        date_field = filters.get("date_field")
-        if date_field and filters.get("from") and filters.get("to"):
-            query += f" WHERE {date_field} BETWEEN '{filters['from']}' AND '{filters['to']}'"
-        equals = filters.get("equals", {})
-        for k, v in equals.items():
-            if "WHERE" in query:
-                query += f" AND {k}='{v}'"
-            else:
-                query += f" WHERE {k}='{v}'"
+            headers = {
+                "Authorization": f"Bearer {source.bearer_token}",
+                "Accept": "application/json",
+                "Content-Type": "application/text"
+            }
     
-        if source.provider.lower() == "quickbooks":
+            entity = getattr(dataset, "entity", None) or "Customer"
+            fields = getattr(dataset, "fields", None) or ["*"]
+    
+            # Build QBO SQL
+            query = f"SELECT {', '.join(fields)} FROM {entity}"
+    
+            filters = getattr(dataset, "filters", {}) or {}
+    
+            where_clauses = []
+    
+            # Date filter
+            if (
+                filters.get("date_field")
+                and filters.get("from")
+                and filters.get("to")
+            ):
+                where_clauses.append(
+                    f"{filters['date_field']} BETWEEN '{filters['from']}' AND '{filters['to']}'"
+                )
+    
+            # Equals filters
+            for k, v in filters.get("equals", {}).items():
+                where_clauses.append(f"{k} = '{v}'")
+    
+            if where_clauses:
+                query += " WHERE " + " AND ".join(where_clauses)
+    
+            url = f"{source.base_url}/query"
             params["query"] = query
-            endpoint = "query"
-    
-            # Ensure token exists
-            if not source.bearer_token:
-                return Response({"error": "QuickBooks token missing."}, status=400)
     
             try:
-                # First attempt
-                data = execute_request(source, endpoint, params=params)
-            except Exception as e:
-                # If 401, refresh token and retry once
-                if "401" in str(e):
-                    logger.info("QuickBooks token expired or invalid, refreshing...")
-                    try:
-                        refresh_quickbooks_token(source)
-                        data = execute_request(source, endpoint, params=params)
-                    except Exception as e2:
-                        logger.exception("Failed to refresh QuickBooks token")
-                        return Response({"error": f"QuickBooks request failed: {str(e2)}"}, status=500)
-                else:
-                    logger.exception("QuickBooks request failed")
-                    return Response({"error": str(e)}, status=500)
+                resp = requests.get(
+                    url,
+                    headers=headers,
+                    params=params,
+                    timeout=20
+                )
+                resp.raise_for_status()
+                payload = resp.json()
     
-            # Normalize QuickBooks response
-            query_response = data.get("QueryResponse", {})
-            if query_response:
-                key = next(iter(query_response.keys()))
-                data = query_response.get(key, [])
-            else:
-                data = []
+            except requests.RequestException as e:
+                return Response(
+                    {"error": str(e)},
+                    status=status.HTTP_502_BAD_GATEWAY
+                )
     
+            # -------- Normalize QuickBooks response --------
+            qr = payload.get("QueryResponse", {})
+            if not qr:
+                return Response({"data": []})
+    
+            entity_key = next(iter(qr.keys()))
+            rows = qr.get(entity_key, [])
+    
+            return Response({
+                "entity": entity,
+                "fields": list(rows[0].keys()) if rows else [],
+                "data": rows,
+                "mock": False
+            })
+    
+        # ---------------- Generic REST APIs ----------------
         else:
-            # Generic REST
-            endpoint = dataset.endpoint or ""
+            url = urljoin(
+                source.base_url.rstrip("/") + "/",
+                (dataset.endpoint or "").lstrip("/")
+            )
+    
+            if source.auth_type == "API_KEY_HEADER" and source.api_key:
+                headers[source.api_key_header] = source.api_key
+            elif source.auth_type == "BEARER" and source.api_key:
+                headers["Authorization"] = f"Bearer {source.api_key}"
+            elif source.auth_type == "API_KEY_QUERY" and source.api_key:
+                params[source.api_key_header] = source.api_key
+    
             try:
-                data = execute_request(source, endpoint, params=params)
-            except Exception as e:
-                logger.exception("REST API request failed")
-                return Response({"error": str(e)}, status=500)
+                resp = requests.get(url, headers=headers, params=params, timeout=20)
+                resp.raise_for_status()
+                data = resp.json()
+            except requests.RequestException as e:
+                return Response(
+                    {"error": str(e)},
+                    status=status.HTTP_502_BAD_GATEWAY
+                )
     
             if isinstance(data, dict):
                 for k in ("results", "data", "rows"):
                     if k in data and isinstance(data[k], list):
                         data = data[k]
                         break
-                else:
-                    if all(isinstance(v, dict) for v in data.values()):
-                        data = list(data.values())
     
-        return Response({"data": data})
+            return Response({"data": data})
 
     
     
