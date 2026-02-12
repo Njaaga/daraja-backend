@@ -55,6 +55,7 @@ from rest_framework.exceptions import APIException
 import requests
 from django.shortcuts import redirect
 from django.contrib.auth.decorators import login_required
+from dashboards.services.oauth import refresh_quickbooks_token
 
 # ---------------------------
 # USERS
@@ -732,13 +733,24 @@ class DatasetViewSet(viewsets.ModelViewSet):
         params = dataset.query_params.copy() if dataset.query_params else {}
         headers = {}
     
-        # ---------------- QuickBooks (REAL) ----------------
+        # ---------------- QuickBooks (REAL with token refresh) ----------------
         if source.provider == "quickbooks":
+            # If missing token/base URL
             if not source.bearer_token or not source.base_url:
                 return Response(
                     {"error": "QuickBooks source missing access token or base URL."},
                     status=status.HTTP_400_BAD_REQUEST
                 )
+    
+            # Auto-refresh token if expired
+            if source.token_expires_at and source.token_expires_at <= timezone.now():
+                try:
+                    refresh_quickbooks_token(source)
+                except Exception as e:
+                    return Response(
+                        {"error": f"Failed to refresh QuickBooks token: {str(e)}"},
+                        status=status.HTTP_502_BAD_GATEWAY
+                    )
     
             headers = {
                 "Authorization": f"Bearer {source.bearer_token}",
@@ -753,15 +765,10 @@ class DatasetViewSet(viewsets.ModelViewSet):
             query = f"SELECT {', '.join(fields)} FROM {entity}"
     
             filters = getattr(dataset, "filters", {}) or {}
-    
             where_clauses = []
     
             # Date filter
-            if (
-                filters.get("date_field")
-                and filters.get("from")
-                and filters.get("to")
-            ):
+            if filters.get("date_field") and filters.get("from") and filters.get("to"):
                 where_clauses.append(
                     f"{filters['date_field']} BETWEEN '{filters['from']}' AND '{filters['to']}'"
                 )
@@ -777,15 +784,9 @@ class DatasetViewSet(viewsets.ModelViewSet):
             params["query"] = query
     
             try:
-                resp = requests.get(
-                    url,
-                    headers=headers,
-                    params=params,
-                    timeout=20
-                )
+                resp = requests.get(url, headers=headers, params=params, timeout=20)
                 resp.raise_for_status()
                 payload = resp.json()
-    
             except requests.RequestException as e:
                 return Response(
                     {"error": str(e)},
