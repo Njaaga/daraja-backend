@@ -729,16 +729,11 @@ class DatasetViewSet(viewsets.ModelViewSet):
 
     # ---------- Internal Dataset Runner ----------
     def _run_dataset(self, dataset):
-        """
-        Run a dataset using the saved ApiDataSource.
-        QuickBooks: auto-refreshes bearer token using your stored refresh token.
-        Generic REST: uses stored credentials from DB.
-        """
         source = dataset.api_source
         params = dataset.query_params.copy() if dataset.query_params else {}
         headers = {}
     
-        # ---------------- QuickBooks (REAL) ----------------
+        # ---------------- QuickBooks ----------------
         if source.provider == "quickbooks":
             if not source.bearer_token or not source.base_url:
                 return Response(
@@ -746,14 +741,15 @@ class DatasetViewSet(viewsets.ModelViewSet):
                     status=status.HTTP_400_BAD_REQUEST
                 )
     
-            # Attempt to refresh token using your refresh token
-            try:
-                refresh_quickbooks_token(source)
-            except Exception as e:
-                return Response(
-                    {"error": f"Failed to refresh QuickBooks token: {str(e)}"},
-                    status=status.HTTP_502_BAD_GATEWAY
-                )
+            # Refresh token if expired
+            if getattr(source, "oauth_token_expires_at", None) and source.oauth_token_expires_at <= timezone.now():
+                try:
+                    refresh_quickbooks_token(source)
+                except requests.RequestException as e:
+                    return Response(
+                        {"error": f"Failed to refresh QuickBooks token: {str(e)}"},
+                        status=status.HTTP_502_BAD_GATEWAY
+                    )
     
             headers = {
                 "Authorization": f"Bearer {source.bearer_token}",
@@ -796,7 +792,7 @@ class DatasetViewSet(viewsets.ModelViewSet):
                     status=status.HTTP_502_BAD_GATEWAY
                 )
     
-            # -------- Normalize QuickBooks response --------
+            # Normalize QuickBooks response
             qr = payload.get("QueryResponse", {})
             if not qr:
                 return Response({"data": []})
@@ -835,7 +831,6 @@ class DatasetViewSet(viewsets.ModelViewSet):
                     status=status.HTTP_502_BAD_GATEWAY
                 )
     
-            # Normalize REST response
             if isinstance(data, dict):
                 for k in ("results", "data", "rows"):
                     if k in data and isinstance(data[k], list):
