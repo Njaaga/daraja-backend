@@ -728,116 +728,116 @@ class DatasetViewSet(viewsets.ModelViewSet):
         return self._run_dataset(dataset)
 
     # ---------- Internal Dataset Runner ----------
-def _run_dataset(self, dataset):
-    source = dataset.api_source
-    params = dataset.query_params.copy() if dataset.query_params else {}
-    headers = {}
-
-    # ---------------- QuickBooks ----------------
-    if source.provider == "quickbooks":
-        if not source.bearer_token or not source.base_url:
-            return Response(
-                {"error": "QuickBooks source missing access token or base URL."},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
-        # Refresh token if expired
-        if getattr(source, "oauth_token_expires_at", None) and source.oauth_token_expires_at <= timezone.now():
+    def _run_dataset(self, dataset):
+        source = dataset.api_source
+        params = dataset.query_params.copy() if dataset.query_params else {}
+        headers = {}
+    
+        # ---------------- QuickBooks ----------------
+        if source.provider == "quickbooks":
+            if not source.bearer_token or not source.base_url:
+                return Response(
+                    {"error": "QuickBooks source missing access token or base URL."},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+    
+            # Refresh token if expired
+            if getattr(source, "oauth_token_expires_at", None) and source.oauth_token_expires_at <= timezone.now():
+                try:
+                    refresh_quickbooks_token(source)
+                except requests.RequestException as e:
+                    return Response(
+                        {"error": f"Failed to refresh QuickBooks token: {str(e)}"},
+                        status=status.HTTP_502_BAD_GATEWAY
+                    )
+    
+            headers = {
+                "Authorization": f"Bearer {source.bearer_token}",
+                "Accept": "application/json",
+                "Content-Type": "application/text"
+            }
+    
+            entity = getattr(dataset, "entity", None) or "Customer"
+            fields = getattr(dataset, "fields", None) or ["*"]
+    
+            # Build QBO SQL
+            query = f"SELECT {', '.join(fields)} FROM {entity}"
+    
+            filters = getattr(dataset, "filters", {}) or {}
+            where_clauses = []
+    
+            # Date filter
+            if filters.get("date_field") and filters.get("from") and filters.get("to"):
+                where_clauses.append(
+                    f"{filters['date_field']} BETWEEN '{filters['from']}' AND '{filters['to']}'"
+                )
+    
+            # Equals filters
+            for k, v in filters.get("equals", {}).items():
+                where_clauses.append(f"{k} = '{v}'")
+    
+            if where_clauses:
+                query += " WHERE " + " AND ".join(where_clauses)
+    
+            url = f"{source.base_url}/query"
+            params["query"] = query
+    
             try:
-                refresh_quickbooks_token(source)
+                resp = requests.get(url, headers=headers, params=params, timeout=20)
+                resp.raise_for_status()
+                payload = resp.json()
             except requests.RequestException as e:
                 return Response(
-                    {"error": f"Failed to refresh QuickBooks token: {str(e)}"},
+                    {"error": str(e)},
                     status=status.HTTP_502_BAD_GATEWAY
                 )
-
-        headers = {
-            "Authorization": f"Bearer {source.bearer_token}",
-            "Accept": "application/json",
-            "Content-Type": "application/text"
-        }
-
-        entity = getattr(dataset, "entity", None) or "Customer"
-        fields = getattr(dataset, "fields", None) or ["*"]
-
-        # Build QBO SQL
-        query = f"SELECT {', '.join(fields)} FROM {entity}"
-
-        filters = getattr(dataset, "filters", {}) or {}
-        where_clauses = []
-
-        # Date filter
-        if filters.get("date_field") and filters.get("from") and filters.get("to"):
-            where_clauses.append(
-                f"{filters['date_field']} BETWEEN '{filters['from']}' AND '{filters['to']}'"
+    
+            # Normalize QuickBooks response
+            qr = payload.get("QueryResponse", {})
+            if not qr:
+                return Response({"data": []})
+    
+            entity_key = next(iter(qr.keys()))
+            rows = qr.get(entity_key, [])
+    
+            return Response({
+                "entity": entity,
+                "fields": list(rows[0].keys()) if rows else [],
+                "data": rows,
+                "mock": False
+            })
+    
+        # ---------------- Generic REST APIs ----------------
+        else:
+            url = urljoin(
+                source.base_url.rstrip("/") + "/",
+                (dataset.endpoint or "").lstrip("/")
             )
-
-        # Equals filters
-        for k, v in filters.get("equals", {}).items():
-            where_clauses.append(f"{k} = '{v}'")
-
-        if where_clauses:
-            query += " WHERE " + " AND ".join(where_clauses)
-
-        url = f"{source.base_url}/query"
-        params["query"] = query
-
-        try:
-            resp = requests.get(url, headers=headers, params=params, timeout=20)
-            resp.raise_for_status()
-            payload = resp.json()
-        except requests.RequestException as e:
-            return Response(
-                {"error": str(e)},
-                status=status.HTTP_502_BAD_GATEWAY
-            )
-
-        # Normalize QuickBooks response
-        qr = payload.get("QueryResponse", {})
-        if not qr:
-            return Response({"data": []})
-
-        entity_key = next(iter(qr.keys()))
-        rows = qr.get(entity_key, [])
-
-        return Response({
-            "entity": entity,
-            "fields": list(rows[0].keys()) if rows else [],
-            "data": rows,
-            "mock": False
-        })
-
-    # ---------------- Generic REST APIs ----------------
-    else:
-        url = urljoin(
-            source.base_url.rstrip("/") + "/",
-            (dataset.endpoint or "").lstrip("/")
-        )
-
-        if source.auth_type == "API_KEY_HEADER" and source.api_key:
-            headers[source.api_key_header] = source.api_key
-        elif source.auth_type == "BEARER" and source.api_key:
-            headers["Authorization"] = f"Bearer {source.api_key}"
-        elif source.auth_type == "API_KEY_QUERY" and source.api_key:
-            params[source.api_key_header] = source.api_key
-
-        try:
-            resp = requests.get(url, headers=headers, params=params, timeout=20)
-            resp.raise_for_status()
-            data = resp.json()
-        except requests.RequestException as e:
-            return Response(
-                {"error": str(e)},
-                status=status.HTTP_502_BAD_GATEWAY
-            )
-
-        if isinstance(data, dict):
-            for k in ("results", "data", "rows"):
-                if k in data and isinstance(data[k], list):
-                    data = data[k]
-                    break
-
-        return Response({"data": data})
+    
+            if source.auth_type == "API_KEY_HEADER" and source.api_key:
+                headers[source.api_key_header] = source.api_key
+            elif source.auth_type == "BEARER" and source.api_key:
+                headers["Authorization"] = f"Bearer {source.api_key}"
+            elif source.auth_type == "API_KEY_QUERY" and source.api_key:
+                params[source.api_key_header] = source.api_key
+    
+            try:
+                resp = requests.get(url, headers=headers, params=params, timeout=20)
+                resp.raise_for_status()
+                data = resp.json()
+            except requests.RequestException as e:
+                return Response(
+                    {"error": str(e)},
+                    status=status.HTTP_502_BAD_GATEWAY
+                )
+    
+            if isinstance(data, dict):
+                for k in ("results", "data", "rows"):
+                    if k in data and isinstance(data[k], list):
+                        data = data[k]
+                        break
+    
+            return Response({"data": data})
     
     
     # ---------- QUICKBOOKS EXECUTOR ----------
