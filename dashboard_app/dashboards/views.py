@@ -728,35 +728,35 @@ class DatasetViewSet(viewsets.ModelViewSet):
         return self._run_dataset(dataset)
 
     # ---------- Internal Dataset Runner ----------
-def _extract_nested_value(obj, path):
-    """
-    Safely extract nested values using dot notation.
-    Example: company.name
-    """
-    value = obj
-    for part in path.split("."):
-        if isinstance(value, dict):
-            value = value.get(part)
-        else:
-            return None
-    return value
-
-
-def _apply_field_selection(rows, fields):
-    """
-    Reduce rows to selected fields while supporting nesting.
-    """
-    if not fields:
-        return rows
-
-    normalized = []
-    for row in rows:
-        selected = {}
-        for field in fields:
-            selected[field] = _extract_nested_value(row, field)
-        normalized.append(selected)
-
-    return normalized
+    def _extract_nested_value(obj, path):
+        """
+        Safely extract nested values using dot notation.
+        Example: company.name
+        """
+        value = obj
+        for part in path.split("."):
+            if isinstance(value, dict):
+                value = value.get(part)
+            else:
+                return None
+        return value
+    
+    
+    def _apply_field_selection(rows, fields):
+        """
+        Reduce rows to selected fields while supporting nesting.
+        """
+        if not fields:
+            return rows
+    
+        normalized = []
+        for row in rows:
+            selected = {}
+            for field in fields:
+                selected[field] = _extract_nested_value(row, field)
+            normalized.append(selected)
+    
+        return normalized
 
 
     def _run_dataset(dataset, source):
