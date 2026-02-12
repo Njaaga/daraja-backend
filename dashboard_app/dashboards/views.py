@@ -740,36 +740,77 @@ class DatasetViewSet(viewsets.ModelViewSet):
     
         # ---------------- QuickBooks ----------------
         if source.provider == "quickbooks":
+            if not source.bearer_token or not source.base_url:
+                return Response(
+                    {"error": "QuickBooks source missing access token or base URL."},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+    
+            headers = {
+                "Authorization": f"Bearer {source.bearer_token}",
+                "Accept": "application/json",
+                "Content-Type": "application/text"
+            }
+    
             entity = getattr(dataset, "entity", None) or "Customer"
-            fields = getattr(dataset, "fields", []) or ["Id", "DisplayName"]
-        
-            # 🔥 MOCK DATA (INLINE)
-            rows = []
-            for i in range(12):
-                row = {}
-                for f in fields:
-                    lf = f.lower()
-        
-                    if lf == "id":
-                        row[f] = i + 1
-                    elif "date" in lf:
-                        row[f] = (datetime.now() - timedelta(days=i)).strftime("%Y-%m-%d")
-                    elif any(x in lf for x in ["amount", "balance", "total"]):
-                        row[f] = round(random.uniform(100, 8000), 2)
-                    elif "email" in lf:
-                        row[f] = f"customer{i+1}@example.com"
-                    elif "phone" in lf:
-                        row[f] = f"+1-555-00{i:02d}"
-                    else:
-                        row[f] = f"{f}-{i+1}"
-        
-                rows.append(row)
-        
+            fields = getattr(dataset, "fields", None) or ["*"]
+    
+            # Build QBO SQL
+            query = f"SELECT {', '.join(fields)} FROM {entity}"
+    
+            filters = getattr(dataset, "filters", {}) or {}
+    
+            where_clauses = []
+    
+            # Date filter
+            if (
+                filters.get("date_field")
+                and filters.get("from")
+                and filters.get("to")
+            ):
+                where_clauses.append(
+                    f"{filters['date_field']} BETWEEN '{filters['from']}' AND '{filters['to']}'"
+                )
+    
+            # Equals filters
+            for k, v in filters.get("equals", {}).items():
+                where_clauses.append(f"{k} = '{v}'")
+    
+            if where_clauses:
+                query += " WHERE " + " AND ".join(where_clauses)
+    
+            url = f"{source.base_url}/query"
+            params["query"] = query
+    
+            try:
+                resp = requests.get(
+                    url,
+                    headers=headers,
+                    params=params,
+                    timeout=20
+                )
+                resp.raise_for_status()
+                payload = resp.json()
+    
+            except requests.RequestException as e:
+                return Response(
+                    {"error": str(e)},
+                    status=status.HTTP_502_BAD_GATEWAY
+                )
+    
+            # -------- Normalize QuickBooks response --------
+            qr = payload.get("QueryResponse", {})
+            if not qr:
+                return Response({"data": []})
+    
+            entity_key = next(iter(qr.keys()))
+            rows = qr.get(entity_key, [])
+    
             return Response({
                 "entity": entity,
-                "fields": fields,
+                "fields": list(rows[0].keys()) if rows else [],
                 "data": rows,
-                "mock": True
+                "mock": False
             })
 
     
