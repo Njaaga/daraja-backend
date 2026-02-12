@@ -23,7 +23,7 @@ def refresh_quickbooks_token(api_source):
     data = response.json()
 
     api_source.bearer_token = data["access_token"]
-    api_source.refresh_token = data.get(
+    api_source.oauth_refresh_token = data.get(
         "refresh_token", api_source.oauth_refresh_token
     )
     api_source.oauth_token_expires_at = (
