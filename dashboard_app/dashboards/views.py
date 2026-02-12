@@ -736,7 +736,6 @@ def _run_dataset(self, dataset):
     """
     source = dataset.api_source
     params = dataset.query_params.copy() if dataset.query_params else {}
-    headers = {}
 
     try:
         # ---------------- QuickBooks ----------------
