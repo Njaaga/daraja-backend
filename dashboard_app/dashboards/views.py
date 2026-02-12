@@ -630,7 +630,7 @@ class ApiDataSourceViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["get"], url_path="entity_fields/(?P<entity>[^/.]+)")
     def entity_fields(self, request, pk=None, entity=None):
         """
-        Returns a list of fields for a given QuickBooks entity.
+        Returns mock fields for a given QuickBooks entity for testing charts.
         """
         api_source = self.get_object()
 
@@ -640,15 +640,54 @@ class ApiDataSourceViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        # Placeholder fields (replace with live QB fetch later)
-        placeholder_fields = {
-            "Invoice": ["Id", "CustomerRef", "TxnDate", "TotalAmt", "Balance"],
-            "Customer": ["Id", "DisplayName", "PrimaryEmailAddr", "Phone"],
-            "Account": ["Id", "Name", "AccountType", "AccountSubType"],
-            "Payment": ["Id", "CustomerRef", "TxnDate", "Amount", "PaymentMethodRef"],
+        # Mock entity fields for testing
+        mock_fields = {
+            "Invoice": [
+                "Id",
+                "DocNumber",
+                "CustomerRef",
+                "TxnDate",
+                "DueDate",
+                "TotalAmt",
+                "Balance",
+                "Line",
+            ],
+            "Customer": [
+                "Id",
+                "DisplayName",
+                "PrimaryEmailAddr",
+                "Phone",
+                "Balance",
+                "OpenBalance",
+            ],
+            "Account": [
+                "Id",
+                "Name",
+                "AccountType",
+                "AccountSubType",
+                "CurrentBalance",
+            ],
+            "Payment": [
+                "Id",
+                "CustomerRef",
+                "TxnDate",
+                "Amount",
+                "PaymentMethodRef",
+                "DepositToAccountRef",
+            ],
+            "Item": [
+                "Id",
+                "Name",
+                "Description",
+                "Type",
+                "IncomeAccountRef",
+                "ExpenseAccountRef",
+            ],
         }
 
-        fields = placeholder_fields.get(entity, [])
+        fields = mock_fields.get(entity, [])
+
+        # Return fields in a format your frontend expects
         return Response({"fields": fields}, status=status.HTTP_200_OK)
 
         
