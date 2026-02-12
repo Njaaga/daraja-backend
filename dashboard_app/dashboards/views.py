@@ -740,32 +740,38 @@ class DatasetViewSet(viewsets.ModelViewSet):
     
         # ---------------- QuickBooks ----------------
         if source.provider == "quickbooks":
-            if not source.bearer_token or not source.base_url:
-                return Response({"error": "QuickBooks source missing access token or base URL."}, status=400)
-    
-            headers["Authorization"] = f"Bearer {source.bearer_token}"
-            headers["Accept"] = "application/json"
-    
-            # Use dataset entity & fields, or defaults
             entity = getattr(dataset, "entity", None) or "Customer"
-            fields = getattr(dataset, "fields", []) or ["*"]
-            query = f"SELECT {', '.join(fields)} FROM {entity}"
-    
-            # Apply filters
-            filters = getattr(dataset, "filters", {})
-            date_field = filters.get("date_field")
-            if date_field and filters.get("from") and filters.get("to"):
-                query += f" WHERE {date_field} BETWEEN '{filters['from']}' AND '{filters['to']}'"
-    
-            equals = filters.get("equals", {})
-            for k, v in equals.items():
-                if "WHERE" in query:
-                    query += f" AND {k}='{v}'"
-                else:
-                    query += f" WHERE {k}='{v}'"
-    
-            url = f"{source.base_url}/query"
-            params["query"] = query
+            fields = getattr(dataset, "fields", []) or ["Id", "DisplayName"]
+        
+            # 🔥 MOCK DATA (INLINE)
+            rows = []
+            for i in range(12):
+                row = {}
+                for f in fields:
+                    lf = f.lower()
+        
+                    if lf == "id":
+                        row[f] = i + 1
+                    elif "date" in lf:
+                        row[f] = (datetime.now() - timedelta(days=i)).strftime("%Y-%m-%d")
+                    elif any(x in lf for x in ["amount", "balance", "total"]):
+                        row[f] = round(random.uniform(100, 8000), 2)
+                    elif "email" in lf:
+                        row[f] = f"customer{i+1}@example.com"
+                    elif "phone" in lf:
+                        row[f] = f"+1-555-00{i:02d}"
+                    else:
+                        row[f] = f"{f}-{i+1}"
+        
+                rows.append(row)
+        
+            return Response({
+                "entity": entity,
+                "fields": fields,
+                "data": rows,
+                "mock": True
+            })
+
     
         # ---------------- Generic REST APIs ----------------
         else:
