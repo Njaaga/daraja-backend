@@ -732,22 +732,18 @@ class DatasetViewSet(viewsets.ModelViewSet):
     def _run_dataset(self, dataset):
         """
         Run a dataset using the saved ApiDataSource.
-        QuickBooks: auto-refresh token if expired.
-        Generic REST: uses stored credentials.
+        QuickBooks: uses bearer_token and base_url from DB, auto-refreshes token.
+        Generic REST: uses stored credentials from DB.
         """
         source = dataset.api_source
         params = dataset.query_params.copy() if dataset.query_params else {}
     
         try:
             # ---------------- QuickBooks ----------------
-            if source.provider.lower() == "quickbooks":
-                # Refresh token if expired
-                if source.token_expires_at and source.token_expires_at <= timezone.now():
-                    refresh_quickbooks_token(source)
-    
-                # Use dataset entity & fields, or defaults
+            if source.provider == "quickbooks":
                 entity = getattr(dataset, "entity", None) or "Customer"
-                fields = getattr(dataset, "fields", None) or ["*"]
+                fields = getattr(dataset, "fields", []) or ["*"]
+    
                 query = f"SELECT {', '.join(fields)} FROM {entity}"
     
                 # Apply filters
@@ -763,10 +759,13 @@ class DatasetViewSet(viewsets.ModelViewSet):
                     else:
                         query += f" WHERE {k}='{v}'"
     
-                params["query"] = query
-                endpoint = "query"
-    
-                data = execute_request(source, endpoint, params=params)
+                # Execute request via centralized function
+                data = execute_request(
+                    api_source=source,
+                    endpoint="query",
+                    method="GET",
+                    params={"query": query},
+                )
     
                 # Normalize QuickBooks response
                 query_response = data.get("QueryResponse", {})
@@ -776,26 +775,35 @@ class DatasetViewSet(viewsets.ModelViewSet):
                 else:
                     data = []
     
-            # ---------------- Generic REST ----------------
+            # ---------------- Generic REST APIs ----------------
             else:
-                endpoint = dataset.endpoint or ""
-                data = execute_request(source, endpoint, params=params)
+                endpoint = getattr(dataset, "endpoint", "")
+                data = execute_request(
+                    api_source=source,
+                    endpoint=endpoint,
+                    method="GET",
+                    params=params,
+                    body=None,
+                )
     
-                # Normalize common REST structures
+                # Normalize common REST responses
                 if isinstance(data, dict):
                     for k in ("results", "data", "rows"):
                         if k in data and isinstance(data[k], list):
                             data = data[k]
                             break
                     else:
-                        # If dict of dicts, convert to list
+                        # fallback: convert dict values to list if all are dicts
                         if all(isinstance(v, dict) for v in data.values()):
                             data = list(data.values())
+                        else:
+                            return Response({"result": data})
     
             return Response({"data": data})
     
         except Exception as e:
-            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            # catch all errors including 401, network, etc
+            return Response({"error": str(e)}, status=status.HTTP_502_BAD_GATEWAY)
 
     
     
