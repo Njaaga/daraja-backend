@@ -588,7 +588,6 @@ class ApiDataSourceViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         tenant = get_current_tenant()
         show_deleted = self.request.query_params.get("show_deleted") == "true"
-
         qs = ApiDataSource.objects.filter(tenant=tenant)
         return qs if show_deleted else qs.filter(is_deleted=False)
 
@@ -601,7 +600,6 @@ class ApiDataSourceViewSet(viewsets.ModelViewSet):
     def perform_create(self, serializer):
         tenant = get_current_tenant()
         enforce_subscription_limit(tenant, "datasources")
-
         serializer.save(
             tenant=tenant,
             created_by=self.request.user,
@@ -630,7 +628,7 @@ class ApiDataSourceViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["get"], url_path="entity_fields/(?P<entity>[^/.]+)")
     def entity_fields(self, request, pk=None, entity=None):
         """
-        Returns mock fields for a given QuickBooks entity for testing charts.
+        Returns the fields for a given QuickBooks entity.
         """
         api_source = self.get_object()
 
@@ -640,55 +638,66 @@ class ApiDataSourceViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        # Mock entity fields for testing
+        # Mock fields for testing charts
         mock_fields = {
-            "Invoice": [
-                "Id",
-                "DocNumber",
-                "CustomerRef",
-                "TxnDate",
-                "DueDate",
-                "TotalAmt",
-                "Balance",
-                "Line",
-            ],
-            "Customer": [
-                "Id",
-                "DisplayName",
-                "PrimaryEmailAddr",
-                "Phone",
-                "Balance",
-                "OpenBalance",
-            ],
-            "Account": [
-                "Id",
-                "Name",
-                "AccountType",
-                "AccountSubType",
-                "CurrentBalance",
-            ],
-            "Payment": [
-                "Id",
-                "CustomerRef",
-                "TxnDate",
-                "Amount",
-                "PaymentMethodRef",
-                "DepositToAccountRef",
-            ],
-            "Item": [
-                "Id",
-                "Name",
-                "Description",
-                "Type",
-                "IncomeAccountRef",
-                "ExpenseAccountRef",
-            ],
+            "Invoice": ["Id", "DocNumber", "CustomerRef", "TxnDate", "DueDate", "TotalAmt", "Balance"],
+            "Customer": ["Id", "DisplayName", "PrimaryEmailAddr", "Phone", "Balance", "OpenBalance"],
+            "Account": ["Id", "Name", "AccountType", "AccountSubType", "CurrentBalance"],
+            "Payment": ["Id", "CustomerRef", "TxnDate", "Amount", "PaymentMethodRef"],
+            "Item": ["Id", "Name", "Description", "Type", "IncomeAccountRef", "ExpenseAccountRef"],
         }
 
-        fields = mock_fields.get(entity, [])
-
-        # Return fields in a format your frontend expects
+        fields = mock_fields.get(entity, ["Id", "Name", "Value"])
         return Response({"fields": fields}, status=status.HTTP_200_OK)
+
+    # ---------------- QuickBooks Mock Data for Dataset Preview ----------------
+    @action(detail=True, methods=["post"])
+    def run(self, request, pk=None):
+        """
+        Returns mock data for the dataset preview based on the entity.
+        """
+        api_source = self.get_object()
+        entity = request.data.get("entity", "Invoice")  # Default to Invoice
+
+        if not api_source.provider or api_source.provider.lower() != "quickbooks":
+            return Response(
+                {"error": "Not a QuickBooks API source."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Use same mock fields as entity_fields
+        mock_fields = {
+            "Invoice": ["Id", "DocNumber", "CustomerRef", "TxnDate", "DueDate", "TotalAmt", "Balance"],
+            "Customer": ["Id", "DisplayName", "PrimaryEmailAddr", "Phone", "Balance", "OpenBalance"],
+            "Account": ["Id", "Name", "AccountType", "AccountSubType", "CurrentBalance"],
+            "Payment": ["Id", "CustomerRef", "TxnDate", "Amount", "PaymentMethodRef"],
+            "Item": ["Id", "Name", "Description", "Type", "IncomeAccountRef", "ExpenseAccountRef"],
+        }
+
+        fields = mock_fields.get(entity, ["Id", "Name", "Value"])
+
+        # Generate 10 rows of fake data
+        data = []
+        for i in range(10):
+            row = {}
+            for field in fields:
+                if "Id" in field:
+                    row[field] = i + 1
+                elif "Date" in field:
+                    row[field] = (datetime.now() - timedelta(days=random.randint(0, 30))).strftime("%Y-%m-%d")
+                elif "Amount" in field or "Balance" in field or "OpenBalance" in field or "CurrentBalance" in field or "Total" in field:
+                    row[field] = round(random.uniform(100, 5000), 2)
+                elif "Email" in field:
+                    row[field] = f"user{i}@example.com"
+                elif "Phone" in field:
+                    row[field] = f"+1-555-010{i:02d}"
+                elif "Ref" in field:
+                    row[field] = f"Ref-{i+1}"
+                else:
+                    row[field] = f"{field}-{i+1}"
+            data.append(row)
+
+        return Response({"fields": fields, "data": data}, status=status.HTTP_200_OK)
 
         
 # ---------- Datasets ----------
