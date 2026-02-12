@@ -56,7 +56,7 @@ import requests
 from django.shortcuts import redirect
 from django.contrib.auth.decorators import login_required
 from dashboards.services.request_builder import execute_request
-from dashboards.oauth.services import refresh_quickbooks_token
+from dashboards.services.oauth import refresh_quickbooks_token
 
 # ---------------------------
 # USERS
