@@ -14,7 +14,7 @@ def refresh_quickbooks_token(api_source):
         ),
         headers={"Accept": "application/json"},
         data={
-            "grant_type": "oauth_refresh_token",
+            "grant_type": "refresh_token",
             "refresh_token": api_source.oauth_refresh_token,
         },
     )
