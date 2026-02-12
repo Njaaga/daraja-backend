@@ -729,80 +729,78 @@ class DatasetViewSet(viewsets.ModelViewSet):
 
     # ---------- Internal Dataset Runner ----------
     def _run_dataset(self, dataset):
-        """
-        Run a dataset using the saved ApiDataSource.
-        QuickBooks: uses bearer_token and base_url from DB, auto-refreshes token.
-        Generic REST: uses stored credentials from DB.
-        """
         source = dataset.api_source
         params = dataset.query_params.copy() if dataset.query_params else {}
     
-        try:
-            # ---------------- QuickBooks ----------------
-            if source.provider == "quickbooks":
-                entity = getattr(dataset, "entity", None) or "Customer"
-                fields = getattr(dataset, "fields", []) or ["*"]
+        # QuickBooks defaults
+        entity = getattr(dataset, "entity", None) or "Customer"
+        fields = getattr(dataset, "fields", None) or ["*"]
+        filters = getattr(dataset, "filters", {}) or {}
     
-                query = f"SELECT {', '.join(fields)} FROM {entity}"
-    
-                # Apply filters
-                filters = getattr(dataset, "filters", {})
-                date_field = filters.get("date_field")
-                if date_field and filters.get("from") and filters.get("to"):
-                    query += f" WHERE {date_field} BETWEEN '{filters['from']}' AND '{filters['to']}'"
-    
-                equals = filters.get("equals", {})
-                for k, v in equals.items():
-                    if "WHERE" in query:
-                        query += f" AND {k}='{v}'"
-                    else:
-                        query += f" WHERE {k}='{v}'"
-    
-                # Execute request via centralized function
-                data = execute_request(
-                    api_source=source,
-                    endpoint="query",
-                    method="GET",
-                    params={"query": query},
-                )
-    
-                # Normalize QuickBooks response
-                query_response = data.get("QueryResponse", {})
-                if query_response:
-                    key = next(iter(query_response.keys()))
-                    data = query_response.get(key, [])
-                else:
-                    data = []
-    
-            # ---------------- Generic REST APIs ----------------
+        # Build QuickBooks query
+        query = f"SELECT {', '.join(fields)} FROM {entity}"
+        date_field = filters.get("date_field")
+        if date_field and filters.get("from") and filters.get("to"):
+            query += f" WHERE {date_field} BETWEEN '{filters['from']}' AND '{filters['to']}'"
+        equals = filters.get("equals", {})
+        for k, v in equals.items():
+            if "WHERE" in query:
+                query += f" AND {k}='{v}'"
             else:
-                endpoint = getattr(dataset, "endpoint", "")
-                data = execute_request(
-                    api_source=source,
-                    endpoint=endpoint,
-                    method="GET",
-                    params=params,
-                    body=None,
-                )
+                query += f" WHERE {k}='{v}'"
     
-                # Normalize common REST responses
-                if isinstance(data, dict):
-                    for k in ("results", "data", "rows"):
-                        if k in data and isinstance(data[k], list):
-                            data = data[k]
-                            break
-                    else:
-                        # fallback: convert dict values to list if all are dicts
-                        if all(isinstance(v, dict) for v in data.values()):
-                            data = list(data.values())
-                        else:
-                            return Response({"result": data})
+        if source.provider.lower() == "quickbooks":
+            params["query"] = query
+            endpoint = "query"
     
-            return Response({"data": data})
+            # Ensure token exists
+            if not source.bearer_token:
+                return Response({"error": "QuickBooks token missing."}, status=400)
     
-        except Exception as e:
-            # catch all errors including 401, network, etc
-            return Response({"error": str(e)}, status=status.HTTP_502_BAD_GATEWAY)
+            try:
+                # First attempt
+                data = execute_request(source, endpoint, params=params)
+            except Exception as e:
+                # If 401, refresh token and retry once
+                if "401" in str(e):
+                    logger.info("QuickBooks token expired or invalid, refreshing...")
+                    try:
+                        refresh_quickbooks_token(source)
+                        data = execute_request(source, endpoint, params=params)
+                    except Exception as e2:
+                        logger.exception("Failed to refresh QuickBooks token")
+                        return Response({"error": f"QuickBooks request failed: {str(e2)}"}, status=500)
+                else:
+                    logger.exception("QuickBooks request failed")
+                    return Response({"error": str(e)}, status=500)
+    
+            # Normalize QuickBooks response
+            query_response = data.get("QueryResponse", {})
+            if query_response:
+                key = next(iter(query_response.keys()))
+                data = query_response.get(key, [])
+            else:
+                data = []
+    
+        else:
+            # Generic REST
+            endpoint = dataset.endpoint or ""
+            try:
+                data = execute_request(source, endpoint, params=params)
+            except Exception as e:
+                logger.exception("REST API request failed")
+                return Response({"error": str(e)}, status=500)
+    
+            if isinstance(data, dict):
+                for k in ("results", "data", "rows"):
+                    if k in data and isinstance(data[k], list):
+                        data = data[k]
+                        break
+                else:
+                    if all(isinstance(v, dict) for v in data.values()):
+                        data = list(data.values())
+    
+        return Response({"data": data})
 
     
     
