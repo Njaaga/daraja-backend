@@ -232,6 +232,9 @@ class DatasetSerializer(serializers.ModelSerializer):
             "api_source_name",
             "endpoint",
             "query_params",
+            "entity",
+            "fields",
+            "filters",
             "created_by",
             "created_at",
         ]
