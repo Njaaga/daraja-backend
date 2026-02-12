@@ -728,165 +728,99 @@ class DatasetViewSet(viewsets.ModelViewSet):
         return self._run_dataset(dataset)
 
     # ---------- Internal Dataset Runner ----------
-    def _extract_nested_value(obj, path):
-        """
-        Safely extract nested values using dot notation.
-        Example: company.name
-        """
-        value = obj
-        for part in path.split("."):
-            if isinstance(value, dict):
-                value = value.get(part)
-            else:
-                return None
-        return value
-    
-    
-    def _apply_field_selection(rows, fields):
-        """
-        Reduce rows to selected fields while supporting nesting.
-        """
-        if not fields:
-            return rows
-    
-        normalized = []
-        for row in rows:
-            selected = {}
-            for field in fields:
-                selected[field] = _extract_nested_value(row, field)
-            normalized.append(selected)
-    
-        return normalized
+def _run_dataset(self, dataset):
+    source = dataset.api_source
+    params = dataset.query_params.copy() if dataset.query_params else {}
+    headers = {}
 
+    # ---------------- QuickBooks ----------------
+    if source.provider == "quickbooks":
+        if not source.bearer_token or not source.base_url:
+            return Response(
+                {"error": "QuickBooks source missing access token or base URL."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
 
-    def _run_dataset(dataset, source):
-        """
-        Executes a dataset against its data source.
-        Supports QuickBooks and generic REST APIs.
-        Always returns a normalized response for dashboards.
-        """
-    
-        # =====================================================
-        # QUICKBOOKS DATASETS
-        # =====================================================
-        if source.provider == "quickbooks":
-    
-            if not source.bearer_token:
-                return Response(
-                    {"error": "QuickBooks access token missing"},
-                    status=status.HTTP_401_UNAUTHORIZED,
-                )
-    
-            if not source.base_url:
-                return Response(
-                    {"error": "QuickBooks base URL missing"},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
-    
-            if not dataset.entity:
-                return Response(
-                    {"error": "Dataset entity is required (e.g. Customer, Invoice)"},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
-    
-            fields = list(dict.fromkeys(dataset.fields or []))
-            if not fields:
-                return Response(
-                    {"error": "Select at least one field"},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
-    
-            # -----------------------------
-            # Build QuickBooks Query
-            # -----------------------------
-            query = f"SELECT {', '.join(fields)} FROM {dataset.entity}"
-    
-            filters = dataset.filters or {}
-            where_clauses = []
-    
-            if (
-                filters.get("date_field")
-                and filters.get("from")
-                and filters.get("to")
-            ):
-                where_clauses.append(
-                    f"{filters['date_field']} >= '{filters['from']}' "
-                    f"AND {filters['date_field']} <= '{filters['to']}'"
-                )
-    
-            for key, value in (filters.get("equals") or {}).items():
-                where_clauses.append(f"{key} = '{value}'")
-    
-            if where_clauses:
-                query += " WHERE " + " AND ".join(where_clauses)
-    
-            headers = {
-                "Authorization": f"Bearer {source.bearer_token}",
-                "Accept": "application/json",
-                "Content-Type": "application/text",
-            }
-    
+        # Refresh token if expired
+        if getattr(source, "oauth_token_expires_at", None) and source.oauth_token_expires_at <= timezone.now():
             try:
-                resp = requests.get(
-                    f"{source.base_url}/query",
-                    headers=headers,
-                    params={"query": query},
-                    timeout=20,
-                )
-                resp.raise_for_status()
-                payload = resp.json()
+                refresh_quickbooks_token(source)
             except requests.RequestException as e:
                 return Response(
-                    {
-                        "error": "QuickBooks request failed",
-                        "details": str(e),
-                        "query": query,
-                    },
-                    status=status.HTTP_502_BAD_GATEWAY,
+                    {"error": f"Failed to refresh QuickBooks token: {str(e)}"},
+                    status=status.HTTP_502_BAD_GATEWAY
                 )
-    
-            if "Fault" in payload:
-                return Response(
-                    {
-                        "error": "QuickBooks API error",
-                        "details": payload["Fault"],
-                        "query": query,
-                    },
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
-    
-            query_response = payload.get("QueryResponse", {})
-            entity_key = next(iter(query_response.keys()), None)
-            rows = query_response.get(entity_key, []) if entity_key else []
-    
-            return Response({
-                "meta": {
-                    "provider": "quickbooks",
-                    "entity": dataset.entity,
-                    "count": len(rows),
-                },
-                "fields": fields,
-                "rows": rows,
-            })
-    
-        # =====================================================
-        # GENERIC REST DATASETS
-        # =====================================================
-        headers = {}
-        params = {}
-    
+
+        headers = {
+            "Authorization": f"Bearer {source.bearer_token}",
+            "Accept": "application/json",
+            "Content-Type": "application/text"
+        }
+
+        entity = getattr(dataset, "entity", None) or "Customer"
+        fields = getattr(dataset, "fields", None) or ["*"]
+
+        # Build QBO SQL
+        query = f"SELECT {', '.join(fields)} FROM {entity}"
+
+        filters = getattr(dataset, "filters", {}) or {}
+        where_clauses = []
+
+        # Date filter
+        if filters.get("date_field") and filters.get("from") and filters.get("to"):
+            where_clauses.append(
+                f"{filters['date_field']} BETWEEN '{filters['from']}' AND '{filters['to']}'"
+            )
+
+        # Equals filters
+        for k, v in filters.get("equals", {}).items():
+            where_clauses.append(f"{k} = '{v}'")
+
+        if where_clauses:
+            query += " WHERE " + " AND ".join(where_clauses)
+
+        url = f"{source.base_url}/query"
+        params["query"] = query
+
+        try:
+            resp = requests.get(url, headers=headers, params=params, timeout=20)
+            resp.raise_for_status()
+            payload = resp.json()
+        except requests.RequestException as e:
+            return Response(
+                {"error": str(e)},
+                status=status.HTTP_502_BAD_GATEWAY
+            )
+
+        # Normalize QuickBooks response
+        qr = payload.get("QueryResponse", {})
+        if not qr:
+            return Response({"data": []})
+
+        entity_key = next(iter(qr.keys()))
+        rows = qr.get(entity_key, [])
+
+        return Response({
+            "entity": entity,
+            "fields": list(rows[0].keys()) if rows else [],
+            "data": rows,
+            "mock": False
+        })
+
+    # ---------------- Generic REST APIs ----------------
+    else:
         url = urljoin(
             source.base_url.rstrip("/") + "/",
-            (dataset.endpoint or "").lstrip("/"),
+            (dataset.endpoint or "").lstrip("/")
         )
-    
+
         if source.auth_type == "API_KEY_HEADER" and source.api_key:
             headers[source.api_key_header] = source.api_key
         elif source.auth_type == "BEARER" and source.api_key:
             headers["Authorization"] = f"Bearer {source.api_key}"
         elif source.auth_type == "API_KEY_QUERY" and source.api_key:
             params[source.api_key_header] = source.api_key
-    
+
         try:
             resp = requests.get(url, headers=headers, params=params, timeout=20)
             resp.raise_for_status()
@@ -894,34 +828,16 @@ class DatasetViewSet(viewsets.ModelViewSet):
         except requests.RequestException as e:
             return Response(
                 {"error": str(e)},
-                status=status.HTTP_502_BAD_GATEWAY,
+                status=status.HTTP_502_BAD_GATEWAY
             )
-    
-        # -----------------------------
-        # Normalize common API shapes
-        # -----------------------------
-        if isinstance(data, dict):
-            for key in ("results", "data", "rows", "items"):
-                if isinstance(data.get(key), list):
-                    data = data[key]
-                    break
-    
-        if not isinstance(data, list):
-            data = []
-    
-        fields = list(dataset.fields or [])
-        rows = _apply_field_selection(data, fields)
-    
-        return Response({
-            "meta": {
-                "provider": "rest",
-                "entity": dataset.endpoint,
-                "count": len(rows),
-            },
-            "fields": fields,
-            "rows": rows,
-        })
 
+        if isinstance(data, dict):
+            for k in ("results", "data", "rows"):
+                if k in data and isinstance(data[k], list):
+                    data = data[k]
+                    break
+
+        return Response({"data": data})
     
     
     # ---------- QUICKBOOKS EXECUTOR ----------
