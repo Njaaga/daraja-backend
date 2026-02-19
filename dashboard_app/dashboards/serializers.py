@@ -319,36 +319,38 @@ class ChartSerializer(serializers.ModelSerializer):
     # ----------------------------
     def validate(self, attrs):
         chart_type = attrs.get("chart_type")
-        x_field = attrs.get("x_field")
-        y_field = attrs.get("y_field")
         dataset = attrs.get("dataset")
         excel_data = attrs.get("excel_data")
+        joins = attrs.get("joins", [])
     
         # ----------------------------
-        # Excel-based charts
+        # Excel charts (static only)
         # ----------------------------
         if excel_data is not None:
+            if dataset or joins:
+                raise serializers.ValidationError(
+                    "excel_data is only allowed for Excel-based charts. "
+                    "Remove dataset/joins for API-based charts."
+                )
+    
             if not isinstance(excel_data, list) or not excel_data:
                 raise serializers.ValidationError(
                     "Excel charts require a non-empty excel_data array."
                 )
     
-            # Excel charts do not use dataset or joins
             return attrs
     
         # ----------------------------
-        # API / Dataset-based charts
+        # API / QuickBooks charts
         # ----------------------------
-        if not dataset:
+        if not dataset and not joins:
             raise serializers.ValidationError(
-                "Dataset is required for API-based charts."
+                "Provide a dataset or joins for API-based charts."
             )
     
-        # ----------------------------
         # Field requirements
-        # ----------------------------
         if chart_type != "table":
-            if not x_field or not y_field:
+            if not attrs.get("x_field") or not attrs.get("y_field"):
                 raise serializers.ValidationError(
                     "x_field and y_field are required for this chart type."
                 )
