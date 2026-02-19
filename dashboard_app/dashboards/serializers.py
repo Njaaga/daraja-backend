@@ -322,9 +322,8 @@ class ChartSerializer(serializers.ModelSerializer):
         x_field = attrs.get("x_field")
         y_field = attrs.get("y_field")
         dataset = attrs.get("dataset")
-        joins = attrs.get("joins", [])
         excel_data = attrs.get("excel_data")
-
+    
         # ----------------------------
         # Excel-based charts
         # ----------------------------
@@ -333,17 +332,18 @@ class ChartSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError(
                     "Excel charts require a non-empty excel_data array."
                 )
-            # Excel charts do not require dataset or joins
+    
+            # Excel charts do not use dataset or joins
             return attrs
-
+    
         # ----------------------------
-        # Dataset-based charts (QuickBooks / API)
+        # API / Dataset-based charts
         # ----------------------------
-        if not dataset and not joins:
+        if not dataset:
             raise serializers.ValidationError(
-                "Provide a dataset or joins for API-based charts."
+                "Dataset is required for API-based charts."
             )
-
+    
         # ----------------------------
         # Field requirements
         # ----------------------------
@@ -352,25 +352,9 @@ class ChartSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError(
                     "x_field and y_field are required for this chart type."
                 )
-
-        # ----------------------------
-        # Join validation
-        # ----------------------------
-        for join in joins:
-            required = [
-                "left_dataset",
-                "left_field",
-                "right_dataset",
-                "right_field",
-                "type",
-            ]
-            for field in required:
-                if not join.get(field):
-                    raise serializers.ValidationError(
-                        f"Join missing required field: {field}"
-                    )
-
+    
         return attrs
+
 
     # ----------------------------
     # Create
