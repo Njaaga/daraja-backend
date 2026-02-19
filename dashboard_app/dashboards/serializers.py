@@ -271,16 +271,19 @@ class ChartJoinSerializer(serializers.ModelSerializer):
 # CHART SERIALIZER
 class ChartSerializer(serializers.ModelSerializer):
     dataset_name = serializers.SerializerMethodField(read_only=True)
+
     joins = ChartJoinSerializer(many=True, required=False)
     excel_data = serializers.JSONField(required=False, allow_null=True)
 
-    # Save filters & logic rules
+    # Query definition fields (used at runtime)
     filters = serializers.JSONField(required=False, allow_null=True)
     logic_rules = serializers.JSONField(required=False, allow_null=True)
     logic_expression = serializers.CharField(required=False, allow_null=True)
 
     dataset = serializers.PrimaryKeyRelatedField(
-        queryset=Dataset.objects.all(), required=False, allow_null=True
+        queryset=Dataset.objects.all(),
+        required=False,
+        allow_null=True,
     )
 
     class Meta:
@@ -303,74 +306,106 @@ class ChartSerializer(serializers.ModelSerializer):
             "created_by",
             "created_at",
         ]
-        extra_kwargs = {'dataset': {'required': False, 'allow_null': True}}
         read_only_fields = ["created_by", "created_at"]
 
+    # ----------------------------
+    # Derived fields
+    # ----------------------------
     def get_dataset_name(self, obj):
         return obj.dataset.name if obj.dataset else None
 
+    # ----------------------------
+    # Validation
+    # ----------------------------
     def validate(self, attrs):
         chart_type = attrs.get("chart_type")
         x_field = attrs.get("x_field")
         y_field = attrs.get("y_field")
         dataset = attrs.get("dataset")
         joins = attrs.get("joins", [])
-        excel_data = attrs.get("excel_data", None)
+        excel_data = attrs.get("excel_data")
 
-        # Excel chart case — accept if excel_data is a non-empty list
+        # ----------------------------
+        # Excel-based charts
+        # ----------------------------
         if excel_data is not None:
-            if isinstance(excel_data, list) and len(excel_data) == 0:
-                raise serializers.ValidationError("Excel data cannot be empty.")
-            # Excel charts do NOT require dataset
+            if not isinstance(excel_data, list) or not excel_data:
+                raise serializers.ValidationError(
+                    "Excel charts require a non-empty excel_data array."
+                )
+            # Excel charts do not require dataset or joins
             return attrs
 
-
-        # Must have either a dataset, joins (for multi-dataset), or excel_data
-        if not dataset and not joins and not excel_data:
+        # ----------------------------
+        # Dataset-based charts (QuickBooks / API)
+        # ----------------------------
+        if not dataset and not joins:
             raise serializers.ValidationError(
-                "Provide a dataset, joins for multi-dataset chart, or Excel data."
+                "Provide a dataset or joins for API-based charts."
             )
 
-        # For standard charts, x_field and y_field are required
-        if chart_type != "table" and (not x_field or not y_field):
-            raise serializers.ValidationError(
-                "x_field and y_field are required for bar, line, pie, or KPI charts."
-            )
+        # ----------------------------
+        # Field requirements
+        # ----------------------------
+        if chart_type != "table":
+            if not x_field or not y_field:
+                raise serializers.ValidationError(
+                    "x_field and y_field are required for this chart type."
+                )
 
-        # If joins exist, each join must have all fields
+        # ----------------------------
+        # Join validation
+        # ----------------------------
         for join in joins:
-            required_fields = ["left_dataset", "left_field", "right_dataset", "right_field", "type"]
-            for field in required_fields:
+            required = [
+                "left_dataset",
+                "left_field",
+                "right_dataset",
+                "right_field",
+                "type",
+            ]
+            for field in required:
                 if not join.get(field):
                     raise serializers.ValidationError(
-                        f"All join fields are required: missing {field}."
+                        f"Join missing required field: {field}"
                     )
 
         return attrs
-    
-    def create(self, validated_data):
-        joins_data = validated_data.pop('joins', [])
 
-        # Excel charts: no dataset needed
+    # ----------------------------
+    # Create
+    # ----------------------------
+    def create(self, validated_data):
+        joins_data = validated_data.pop("joins", [])
         excel_data = validated_data.get("excel_data")
+
+        # ----------------------------
+        # Excel chart
+        # ----------------------------
         if excel_data is not None:
             chart = Chart.objects.create(**validated_data)
-            for join_data in joins_data:
-                ChartJoin.objects.create(chart=chart, **join_data)
+            for join in joins_data:
+                ChartJoin.objects.create(chart=chart, **join)
             return chart
 
-        if not validated_data.get('dataset') and joins_data:
-            validated_data['dataset'] = joins_data[0]['left_dataset']
+        # ----------------------------
+        # API / QuickBooks chart
+        # ----------------------------
+        if not validated_data.get("dataset") and joins_data:
+            validated_data["dataset"] = joins_data[0]["left_dataset"]
 
-        if not validated_data.get('dataset'):
-            raise serializers.ValidationError("A dataset must be provided if no joins exist.")
+        if not validated_data.get("dataset"):
+            raise serializers.ValidationError(
+                "Dataset is required for non-excel charts."
+            )
 
         chart = Chart.objects.create(**validated_data)
 
-        for join_data in joins_data:
-            ChartJoin.objects.create(chart=chart, **join_data)
+        for join in joins_data:
+            ChartJoin.objects.create(chart=chart, **join)
 
         return chart
+
 
 
 
