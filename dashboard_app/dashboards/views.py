@@ -1104,100 +1104,124 @@ class ChartViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         tenant = get_current_tenant()
-        if tenant:
-            return Chart.objects.filter(tenant=tenant)
-        return Chart.objects.none()
-
-    def create(self, request, *args, **kwargs):
-        try:
-            serializer = self.get_serializer(data=request.data)
-            if not serializer.is_valid():
-                print("VALIDATION ERRORS:", serializer.errors)
-                return Response(serializer.errors, status=400)
-
-            self.perform_create(serializer)
-            headers = self.get_success_headers(serializer.data)
-            return Response(serializer.data, status=201, headers=headers)
-
-        except Exception as e:
-            import traceback
-            print("UNEXPECTED ERROR:", str(e))
-            traceback.print_exc()
-            return Response({"error": str(e)}, status=400)
-
+        return Chart.objects.filter(tenant=tenant) if tenant else Chart.objects.none()
 
     def perform_create(self, serializer):
-        tenant = get_current_tenant()
-        serializer.save(created_by=self.request.user, tenant=tenant)
+        serializer.save(
+            created_by=self.request.user,
+            tenant=get_current_tenant()
+        )
 
+    # ----------------------------------
+    # RUNTIME EXECUTION (REALTIME)
+    # ----------------------------------
     @action(detail=True, methods=["post"])
     def run(self, request, pk=None):
         chart = self.get_object()
 
-        # Excel chart
+        # ------------------------
+        # Excel charts (static)
+        # ------------------------
         if chart.excel_data:
-            return Response({"data": chart.excel_data})
+            return Response({
+                "type": "excel",
+                "data": chart.excel_data,
+            })
 
-        # Multi-dataset joins
+        # ------------------------
+        # Joined charts
+        # ------------------------
         if chart.joins.exists():
-            return self._run_chart_with_joins(chart)
+            return self._execute_joined_chart(chart)
 
-        # Single dataset
+        # ------------------------
+        # Single dataset charts
+        # ------------------------
         if chart.dataset:
-            return self._run_dataset(chart.dataset)
+            return self._execute_dataset(chart.dataset)
 
         return Response(
-            {"error": "Chart has no dataset, joins, or Excel data."},
-            status=status.HTTP_400_BAD_REQUEST,
+            {"error": "Chart is not executable"},
+            status=status.HTTP_400_BAD_REQUEST
         )
 
-    # ------------------------
+    # ----------------------------------
     # Internal helpers
-    # ------------------------
-    def _run_dataset(self, dataset):
+    # ----------------------------------
+    def _execute_dataset(self, dataset):
+        """
+        Executes dataset in realtime (QuickBooks)
+        """
         dv = DatasetViewSet()
         dv.request = self.request
         dv.format_kwarg = None
-        return dv._run_dataset(dataset)
 
-    def _run_chart_with_joins(self, chart):
+        response = dv._run_dataset(dataset)
+
+        # Normalize response
+        if isinstance(response.data, dict) and "data" in response.data:
+            return Response({
+                "type": "dataset",
+                "data": response.data["data"],
+            })
+
+        return Response({
+            "type": "dataset",
+            "data": response.data,
+        })
+
+    def _execute_joined_chart(self, chart):
+        """
+        Executes joined datasets in realtime
+        """
         joins = chart.joins.all()
-        if not joins:
-            return Response({"error": "No joins found"}, status=400)
-
         tenant = get_current_tenant()
+
         datasets = {}
 
-        # Fetch datasets, filtered by tenant
-        for join in joins:
-            for ds in [join.left_dataset, join.right_dataset]:
-                if ds.id not in datasets:
-                    if ds.tenant != tenant:
-                        continue  # skip datasets outside tenant
-                    resp = self._run_dataset(ds)
-                    if isinstance(resp.data, dict) and "data" in resp.data:
-                        datasets[ds.id] = resp.data["data"]
-                    else:
-                        datasets[ds.id] = resp.data
+        dv = DatasetViewSet()
+        dv.request = self.request
+        dv.format_kwarg = None
 
-        # Simple inner join for first join only
+        # Execute each dataset ONCE
+        for join in joins:
+            for ds in (join.left_dataset, join.right_dataset):
+                if ds.id in datasets:
+                    continue
+                if ds.tenant != tenant:
+                    continue
+
+                resp = dv._run_dataset(ds)
+                datasets[ds.id] = resp.data.get("data", resp.data)
+
+        # ⚠️ Join logic (simple inner join – safe MVP)
         join = joins[0]
+
         left_rows = datasets.get(join.left_dataset.id, [])
         right_rows = datasets.get(join.right_dataset.id, [])
 
         left_key = join.left_field
         right_key = join.right_field
 
-        joined_data = []
-        right_index = {r[right_key]: r for r in right_rows if right_key in r}
+        right_index = {
+            r.get(right_key): r
+            for r in right_rows
+            if right_key in r
+        }
 
-        for l in left_rows:
-            key = l.get(left_key)
+        joined = []
+        for row in left_rows:
+            key = row.get(left_key)
             if key in right_index:
-                merged = {**l, **right_index[key]}
-                joined_data.append(merged)
+                joined.append({
+                    **row,
+                    **right_index[key],
+                })
 
-        return Response({"data": joined_data})
+        return Response({
+            "type": "joined",
+            "data": joined,
+        })
 
 # ---------- Dashboards ----------
 class DashboardViewSet(viewsets.ModelViewSet):
