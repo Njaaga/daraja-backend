@@ -1202,6 +1202,9 @@ class ChartViewSet(viewsets.ModelViewSet):
     serializer_class = ChartSerializer
     permission_classes = [IsAuthenticated]
 
+    # ----------------------------------
+    # Queryset
+    # ----------------------------------
     def get_queryset(self):
         tenant = get_current_tenant()
         return Chart.objects.filter(tenant=tenant) if tenant else Chart.objects.none()
@@ -1212,9 +1215,9 @@ class ChartViewSet(viewsets.ModelViewSet):
             tenant=get_current_tenant()
         )
 
-    # ----------------------------------
-    # RUNTIME EXECUTION (REALTIME)
-    # ----------------------------------
+    # ==================================
+    # 🔥 MAIN EXECUTION ENDPOINT
+    # ==================================
     @action(detail=True, methods=["post"])
     def run(self, request, pk=None):
         chart = self.get_object()
@@ -1225,60 +1228,61 @@ class ChartViewSet(viewsets.ModelViewSet):
         if chart.excel_data:
             return Response({
                 "type": "excel",
-                "data": chart.excel_data,
+                "data": chart.excel_data
             })
 
         # ------------------------
         # Joined charts
         # ------------------------
-        if chart.joins.exists():
-            return self._execute_joined_chart(chart)
+        if chart.chart_joins.exists():
+            data = self._execute_joined_chart(chart)
 
         # ------------------------
         # Single dataset charts
         # ------------------------
-        if chart.dataset:
-            return self._execute_dataset(chart.dataset)
+        elif chart.dataset:
+            data = self._execute_dataset(chart)
 
-        return Response(
-            {"error": "Chart is not executable"},
-            status=status.HTTP_400_BAD_REQUEST
-        )
+        else:
+            return Response(
+                {"error": "Chart is not executable"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
 
-    # ----------------------------------
-    # Internal helpers
-    # ----------------------------------
-    def _execute_dataset(self, dataset):
-        """
-        Executes dataset in realtime (QuickBooks)
-        """
+        return Response({
+            "type": "dataset",
+            "data": data
+        })
+
+    # ==================================
+    # DATASET EXECUTION
+    # ==================================
+    def _execute_dataset(self, chart):
         dv = DatasetViewSet()
         dv.request = self.request
         dv.format_kwarg = None
 
-        response = dv._run_dataset(dataset)
+        response = dv._run_dataset(chart.dataset)
 
-        # Normalize response
         if isinstance(response.data, dict) and "data" in response.data:
-            return Response({
-                "type": "dataset",
-                "data": response.data["data"],
-            })
+            rows = response.data["data"]
+        else:
+            rows = response.data
 
-        return Response({
-            "type": "dataset",
-            "data": response.data,
-        })
+        # 🔥 Aggregate unless table
+        if chart.chart_type != "table":
+            rows = self._aggregate_chart_data(rows, chart)
 
+        return rows
+
+    # ==================================
+    # JOINED DATASET EXECUTION
+    # ==================================
     def _execute_joined_chart(self, chart):
-        """
-        Executes joined datasets in realtime
-        """
-        joins = chart.joins.all()
+        joins = chart.chart_joins.all()
         tenant = get_current_tenant()
 
         datasets = {}
-
         dv = DatasetViewSet()
         dv.request = self.request
         dv.format_kwarg = None
@@ -1292,9 +1296,12 @@ class ChartViewSet(viewsets.ModelViewSet):
                     continue
 
                 resp = dv._run_dataset(ds)
-                datasets[ds.id] = resp.data.get("data", resp.data)
+                if isinstance(resp.data, dict) and "data" in resp.data:
+                    datasets[ds.id] = resp.data["data"]
+                else:
+                    datasets[ds.id] = resp.data
 
-        # ⚠️ Join logic (simple inner join – safe MVP)
+        # 🔥 MVP: First join only (safe inner join)
         join = joins[0]
 
         left_rows = datasets.get(join.left_dataset.id, [])
@@ -1306,7 +1313,7 @@ class ChartViewSet(viewsets.ModelViewSet):
         right_index = {
             r.get(right_key): r
             for r in right_rows
-            if right_key in r
+            if r.get(right_key) is not None
         }
 
         joined = []
@@ -1315,14 +1322,63 @@ class ChartViewSet(viewsets.ModelViewSet):
             if key in right_index:
                 joined.append({
                     **row,
-                    **right_index[key],
+                    **right_index[key]
                 })
 
-        return Response({
-            "type": "joined",
-            "data": joined,
-        })
+        # 🔥 Aggregate unless table
+        if chart.chart_type != "table":
+            joined = self._aggregate_chart_data(joined, chart)
 
+        return joined
+
+    # ==================================
+    # 🔥 AGGREGATION ENGINE
+    # ==================================
+    def _aggregate_chart_data(self, rows, chart):
+        """
+        Groups by x_field and aggregates y_field.
+        Eliminates duplicate X-axis values.
+        """
+
+        grouped = defaultdict(list)
+
+        for row in rows:
+            x_value = row.get(chart.x_field)
+            y_value = row.get(chart.y_field, 0)
+
+            if x_value is None:
+                continue
+
+            try:
+                y_value = float(y_value)
+            except (TypeError, ValueError):
+                y_value = 0
+
+            grouped[x_value].append(y_value)
+
+        aggregated = []
+
+        for x, values in grouped.items():
+            if chart.aggregation == "sum":
+                y = sum(values)
+            elif chart.aggregation == "avg":
+                y = sum(values) / len(values)
+            elif chart.aggregation == "count":
+                y = len(values)
+            elif chart.aggregation == "min":
+                y = min(values)
+            elif chart.aggregation == "max":
+                y = max(values)
+            else:
+                # default fallback
+                y = sum(values)
+
+            aggregated.append({
+                "x": x,
+                "y": round(y, 2)
+            })
+
+        return aggregated
 # ---------- Dashboards ----------
 class DashboardViewSet(viewsets.ModelViewSet):
     serializer_class = DashboardSerializer
