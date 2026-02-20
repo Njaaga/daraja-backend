@@ -1246,61 +1246,79 @@ class ChartViewSet(viewsets.ModelViewSet):
         dv = DatasetViewSet()
         dv.request = self.request
         dv.format_kwarg = None
-
+    
         response = dv._run_dataset(chart.dataset)
         rows = response.data.get("data", response.data)
-
+    
         if not isinstance(rows, list):
             return Response({"type": "dataset", "data": []})
-
+    
         x_field = chart.x_field
         y_field = chart.y_field
         agg = chart.aggregation or "none"
-
-        # ----------------------------------
-        # NO AGGREGATION → PASS THROUGH
-        # ----------------------------------
+    
+        # -----------------------------
+        # Debug: show first 5 rows
+        # -----------------------------
+        print("DEBUG rows before aggregation:", rows[:5])
+        print("x_field:", x_field, "y_field:", y_field, "aggregation:", agg)
+    
+        # -----------------------------
+        # No aggregation → pass-through
+        # -----------------------------
         if agg == "none":
             return Response({
                 "type": "dataset",
                 "data": rows,
             })
-
-        # ----------------------------------
-        # GROUPING
-        # ----------------------------------
+    
+        # -----------------------------
+        # Grouping / aggregation
+        # -----------------------------
         buckets = defaultdict(list)
-
+    
         for row in rows:
             if not isinstance(row, dict):
                 continue
-
+    
             x_val = row.get(x_field)
-            y_val = row.get(y_field)
-
+            # fallback to first key if x_field missing
+            if x_val is None:
+                keys = list(row.keys())
+                x_val = row[keys[0]] if keys else None
             if x_val is None:
                 continue
-
-            # COUNT works for ANY value
+    
+            # COUNT works for any value
             if agg == "count":
                 buckets[x_val].append(1)
                 continue
-
-            # Other aggregations require numeric Y
+    
+            # For other aggregations, pick y_field or first numeric
+            y_val = row.get(y_field)
+            if y_val is None:
+                # find first numeric field
+                for k, v in row.items():
+                    try:
+                        y_val = float(v)
+                        break
+                    except (TypeError, ValueError):
+                        continue
             try:
-                buckets[x_val].append(float(y_val))
+                y_val = float(y_val)
+                buckets[x_val].append(y_val)
             except (TypeError, ValueError):
-                continue
-
-        # ----------------------------------
-        # APPLY AGGREGATION
-        # ----------------------------------
+                # fallback for non-numeric
+                buckets[x_val].append(1)
+    
+        # -----------------------------
+        # Apply aggregation
+        # -----------------------------
         result = []
-
         for x_val, values in buckets.items():
             if not values:
                 continue
-
+    
             if agg == "count":
                 y_val = len(values)
             elif agg == "avg":
@@ -1311,25 +1329,25 @@ class ChartViewSet(viewsets.ModelViewSet):
                 y_val = max(values)
             else:  # sum
                 y_val = sum(values)
-
+    
             result.append({
                 x_field: x_val,
                 y_field: round(y_val, 2),
             })
-
-        # ----------------------------------
-        # SORT FOR STABLE CHARTS
-        # ----------------------------------
+    
+        # -----------------------------
+        # Sort for stable chart display
+        # -----------------------------
         try:
             result.sort(key=lambda r: r[x_field])
         except Exception:
             pass
-
-        # ----------------------------------
-        # DEBUG (REMOVE IN PROD)
-        # ----------------------------------
-        print("AGGREGATED DATA:", result)
-
+    
+        # -----------------------------
+        # Debug output
+        # -----------------------------
+        print("AGGREGATED DATA (first 5):", result[:5])
+    
         return Response({
             "type": "dataset",
             "data": result,
