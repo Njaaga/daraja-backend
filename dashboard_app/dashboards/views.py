@@ -632,7 +632,8 @@ class ApiDataSourceViewSet(viewsets.ModelViewSet):
     )
     def entity_fields(self, request, pk=None, entity=None):
         """
-        Matches frontend expectation: /entities/<entity>/fields/
+        GET /api/sources/{id}/entities/{entity}/fields/
+        Fetch REAL QuickBooks fields by inspecting live data
         """
         api_source = self.get_object()
     
@@ -642,16 +643,55 @@ class ApiDataSourceViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST
             )
     
-        mock_fields = {
-            "Invoice": ["Id", "DocNumber", "CustomerRef", "TxnDate", "DueDate", "TotalAmt", "Balance"],
-            "Customer": ["Id", "DisplayName", "PrimaryEmailAddr", "Phone", "Balance", "OpenBalance"],
-            "Account": ["Id", "Name", "AccountType", "AccountSubType", "CurrentBalance"],
-            "Payment": ["Id", "CustomerRef", "TxnDate", "Amount", "PaymentMethodRef"],
-            "Item": ["Id", "Name", "Description", "Type"],
+        if not api_source.bearer_token or not api_source.base_url:
+            return Response(
+                {"error": "QuickBooks not connected"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+    
+        entity = entity.capitalize()
+    
+        qb_query_url = f"{api_source.base_url}/query"
+    
+        headers = {
+            "Authorization": f"Bearer {api_source.bearer_token}",
+            "Accept": "application/json",
+            "Content-Type": "application/text",
         }
     
+        query = f"SELECT * FROM {entity} MAXRESULTS 1"
+    
+        resp = requests.post(
+            qb_query_url,
+            headers=headers,
+            params={"minorversion": 70},
+            data=query,
+            timeout=20,
+        )
+    
+        if resp.status_code != 200:
+            return Response(
+                {
+                    "error": "QuickBooks query failed",
+                    "details": resp.text,
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+    
+        records = (
+            resp.json()
+            .get("QueryResponse", {})
+            .get(entity, [])
+        )
+    
+        if not records:
+            return Response({"fields": []})
+    
+        fields = sorted(flatten_qb_fields(records[0]))
+    
         return Response({
-            "fields": mock_fields.get(entity, ["Id", "Name", "Value"])
+            "entity": entity,
+            "fields": fields
         })
 
 
