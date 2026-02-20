@@ -1202,6 +1202,9 @@ class ChartViewSet(viewsets.ModelViewSet):
     serializer_class = ChartSerializer
     permission_classes = [IsAuthenticated]
 
+    # ----------------------------------
+    # QUERYSET (TENANT SAFE)
+    # ----------------------------------
     def get_queryset(self):
         tenant = get_current_tenant()
         return Chart.objects.filter(tenant=tenant) if tenant else Chart.objects.none()
@@ -1209,17 +1212,19 @@ class ChartViewSet(viewsets.ModelViewSet):
     def perform_create(self, serializer):
         serializer.save(
             created_by=self.request.user,
-            tenant=get_current_tenant()
+            tenant=get_current_tenant(),
         )
 
     # ----------------------------------
-    # RUNTIME EXECUTION (REALTIME)
+    # RUNTIME EXECUTION
     # ----------------------------------
     @action(detail=True, methods=["post"])
     def run(self, request, pk=None):
         chart = self.get_object()
 
-        # Excel charts (static)
+        # ----------------------------
+        # Excel-based charts
+        # ----------------------------
         if chart.excel_data:
             return Response({
                 "type": "excel",
@@ -1229,73 +1234,101 @@ class ChartViewSet(viewsets.ModelViewSet):
         if not chart.dataset:
             return Response(
                 {"error": "Chart has no dataset"},
-                status=status.HTTP_400_BAD_REQUEST
+                status=status.HTTP_400_BAD_REQUEST,
             )
 
-        return self._execute_aggregated_dataset(chart)
+        return self._execute_dataset_with_aggregation(chart)
 
     # ----------------------------------
-    # AGGREGATION ENGINE (THE FIX)
+    # DATASET + AGGREGATION ENGINE
     # ----------------------------------
-    def _execute_aggregated_dataset(self, chart):
-        """
-        Executes dataset + applies grouping + aggregation
-        """
+    def _execute_dataset_with_aggregation(self, chart):
         dv = DatasetViewSet()
         dv.request = self.request
         dv.format_kwarg = None
 
-        resp = dv._run_dataset(chart.dataset)
-        rows = resp.data.get("data", resp.data)
+        response = dv._run_dataset(chart.dataset)
+        rows = response.data.get("data", response.data)
 
         if not isinstance(rows, list):
-            return Response({"data": []})
+            return Response({"type": "dataset", "data": []})
 
         x_field = chart.x_field
         y_field = chart.y_field
-        agg = chart.aggregation or "sum"
+        agg = chart.aggregation or "none"
 
+        # ----------------------------------
+        # NO AGGREGATION → PASS THROUGH
+        # ----------------------------------
+        if agg == "none":
+            return Response({
+                "type": "dataset",
+                "data": rows,
+            })
+
+        # ----------------------------------
+        # GROUPING
+        # ----------------------------------
         buckets = defaultdict(list)
 
-        # ----------------------------
-        # GROUP BY X FIELD
-        # ----------------------------
         for row in rows:
+            if not isinstance(row, dict):
+                continue
+
             x_val = row.get(x_field)
             y_val = row.get(y_field)
 
-            if x_val is None or y_val is None:
+            if x_val is None:
                 continue
 
+            # COUNT works for ANY value
+            if agg == "count":
+                buckets[x_val].append(1)
+                continue
+
+            # Other aggregations require numeric Y
             try:
                 buckets[x_val].append(float(y_val))
             except (TypeError, ValueError):
                 continue
 
-        # ----------------------------
+        # ----------------------------------
         # APPLY AGGREGATION
-        # ----------------------------
+        # ----------------------------------
         result = []
 
-        for x, values in buckets.items():
+        for x_val, values in buckets.items():
+            if not values:
+                continue
+
             if agg == "count":
-                y = len(values)
+                y_val = len(values)
             elif agg == "avg":
-                y = sum(values) / len(values)
+                y_val = sum(values) / len(values)
             elif agg == "min":
-                y = min(values)
+                y_val = min(values)
             elif agg == "max":
-                y = max(values)
-            else:  # sum (default)
-                y = sum(values)
+                y_val = max(values)
+            else:  # sum
+                y_val = sum(values)
 
             result.append({
-                "x": x,
-                "y": round(y, 2),
+                x_field: x_val,
+                y_field: round(y_val, 2),
             })
 
-        # 🔒 SORT FOR STABLE CHARTS
-        result.sort(key=lambda r: r["x"])
+        # ----------------------------------
+        # SORT FOR STABLE CHARTS
+        # ----------------------------------
+        try:
+            result.sort(key=lambda r: r[x_field])
+        except Exception:
+            pass
+
+        # ----------------------------------
+        # DEBUG (REMOVE IN PROD)
+        # ----------------------------------
+        print("AGGREGATED DATA:", result)
 
         return Response({
             "type": "dataset",
