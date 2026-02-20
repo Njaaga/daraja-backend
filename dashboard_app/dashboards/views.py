@@ -625,6 +625,20 @@ class ApiDataSourceViewSet(viewsets.ModelViewSet):
         return Response({"success": True})
 
     # ---------------- QuickBooks Entity Fields Endpoint ----------------
+    def flatten_qb_fields(obj, prefix=""):
+        fields = set()
+    
+        if isinstance(obj, dict):
+            for key, value in obj.items():
+                path = f"{prefix}.{key}" if prefix else key
+                fields.add(path)
+                fields.update(flatten_qb_fields(value, path))
+        elif isinstance(obj, list) and obj:
+            fields.update(flatten_qb_fields(obj[0], prefix))
+    
+        return fields
+    
+    
     @action(
         detail=True,
         methods=["get"],
