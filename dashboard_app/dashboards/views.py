@@ -1247,6 +1247,7 @@ class ChartViewSet(viewsets.ModelViewSet):
         dv.request = self.request
         dv.format_kwarg = None
     
+        # Fetch dataset rows
         response = dv._run_dataset(chart.dataset)
         rows = response.data.get("data", response.data)
     
@@ -1257,54 +1258,68 @@ class ChartViewSet(viewsets.ModelViewSet):
         y_field = chart.y_field
         agg = chart.aggregation or "none"
     
+        # -----------------------------
+        # NO AGGREGATION → pass-through
+        # -----------------------------
+        if agg == "none":
+            return Response({"type": "dataset", "data": rows})
+    
+        # -----------------------------
+        # GROUPING / AGGREGATION
+        # -----------------------------
         buckets = defaultdict(list)
     
         for row in rows:
             if not isinstance(row, dict):
                 continue
     
-            x_val = row.get(x_field) if x_field in row else next(iter(row.keys()), None)
-            y_val = row.get(y_field) if y_field in row else next(iter(row.values()), 0)
+            # fallback: first two keys if x_field or y_field missing
+            row_keys = list(row.keys())
+            x_val = row.get(x_field) if x_field in row else row_keys[0] if row_keys else "N/A"
+            y_val_raw = row.get(y_field) if y_field in row else row_keys[1] if len(row_keys) > 1 else None
     
-            if x_val is None:
-                continue
-    
-            # COUNT works for anything
+            # COUNT works for any value
             if agg == "count":
                 buckets[x_val].append(1)
                 continue
     
-            # Other aggs need numeric
+            # Other aggregations: try numeric, fallback to 0
             try:
-                buckets[x_val].append(float(y_val))
+                y_val = float(y_val_raw)
             except (TypeError, ValueError):
-                buckets[x_val].append(0)  # fallback to 0 instead of skipping
+                y_val = 0
+            buckets[x_val].append(y_val)
     
+        # -----------------------------
+        # APPLY AGGREGATION
+        # -----------------------------
         result = []
         for x_val, values in buckets.items():
             if not values:
                 continue
     
             if agg == "count":
-                y = len(values)
+                y_val = len(values)
             elif agg == "avg":
-                y = sum(values) / len(values)
+                y_val = sum(values) / len(values)
             elif agg == "min":
-                y = min(values)
+                y_val = min(values)
             elif agg == "max":
-                y = max(values)
+                y_val = max(values)
             else:  # sum
-                y = sum(values)
+                y_val = sum(values)
     
-            result.append({x_field or "x": x_val, y_field or "y": round(y, 2)})
+            result.append({x_field: x_val, y_field: round(y_val, 2), "__row": {x_field: x_val, y_field: y_val}})
     
-        # sort for stable display
+        # -----------------------------
+        # SORT for stable chart display
+        # -----------------------------
         try:
-            result.sort(key=lambda r: r[x_field or "x"])
+            result.sort(key=lambda r: r[x_field])
         except Exception:
             pass
     
-        print("AGGREGATED DATA:", result)  # debug
+        print("AGGREGATED DATA DEBUG:", result)  # debug log
     
         return Response({"type": "dataset", "data": result})
 
