@@ -57,6 +57,7 @@ from django.shortcuts import redirect
 from django.contrib.auth.decorators import login_required
 from dashboards.services.oauth import refresh_quickbooks_token
 from rest_framework.decorators import action
+from services.dataset_runner import run_dataset
 
 # ---------------------------
 # USERS
@@ -1243,49 +1244,43 @@ class ChartViewSet(viewsets.ModelViewSet):
     # DATASET + AGGREGATION ENGINE
     # ----------------------------------
     def _execute_dataset_with_aggregation(self, chart):
-        dv = DatasetViewSet()
-        dv.request = self.request
-        dv.format_kwarg = None
+        rows = run_dataset(chart.dataset, self.request)
     
-        response = dv._run_dataset(chart.dataset)
-        rows = response.data.get("data", response.data)
+        print("🔍 DATASET ROWS:", rows)
     
-        if not isinstance(rows, list) or not rows:
+        if not rows:
             return Response({"type": "dataset", "data": []})
     
         x_field = chart.x_field
         y_field = chart.y_field
         agg = chart.aggregation or "none"
     
-        # -------------------------------
-        # NO AGGREGATION → normalize rows
-        # -------------------------------
+        # --------------------
+        # NO AGGREGATION
+        # --------------------
         if agg == "none":
-            normalized = []
+            data = []
     
             for row in rows:
                 if not isinstance(row, dict):
                     continue
     
-                x_val = row.get(x_field)
-                y_val = row.get(y_field)
-    
-                if x_val is None or y_val is None:
+                if x_field not in row or y_field not in row:
                     continue
     
-                normalized.append({
-                    "x": x_val,
-                    "y": y_val,
+                data.append({
+                    "x": row[x_field],
+                    "y": row[y_field],
                 })
     
             return Response({
                 "type": "dataset",
-                "data": normalized,
+                "data": data,
             })
     
-        # -------------------------------
+        # --------------------
         # AGGREGATION
-        # -------------------------------
+        # --------------------
         buckets = defaultdict(list)
     
         for row in rows:
@@ -1293,7 +1288,6 @@ class ChartViewSet(viewsets.ModelViewSet):
                 continue
     
             x_val = row.get(x_field)
-    
             if x_val is None:
                 continue
     
@@ -1305,9 +1299,6 @@ class ChartViewSet(viewsets.ModelViewSet):
                 except (TypeError, ValueError):
                     continue
     
-        # -------------------------------
-        # APPLY AGGREGATION
-        # -------------------------------
         result = []
     
         for x_val, values in buckets.items():
@@ -1322,7 +1313,7 @@ class ChartViewSet(viewsets.ModelViewSet):
                 y_val = min(values)
             elif agg == "max":
                 y_val = max(values)
-            else:  # sum
+            else:
                 y_val = sum(values)
     
             result.append({
@@ -1330,15 +1321,7 @@ class ChartViewSet(viewsets.ModelViewSet):
                 "y": round(y_val, 2),
             })
     
-        # -------------------------------
-        # SORT (stable charts)
-        # -------------------------------
-        try:
-            result.sort(key=lambda r: r["x"])
-        except Exception:
-            pass
-    
-        print("✅ FINAL CHART DATA:", result)
+        result.sort(key=lambda r: r["x"])
     
         return Response({
             "type": "dataset",
