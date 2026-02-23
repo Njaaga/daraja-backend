@@ -1581,77 +1581,95 @@ class DashboardViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["get"])
     def run(self, request, pk=None):
         dashboard = self.get_object()
-        slicers = request.query_params.dict()  # dashboard-level slicers
+
+        # 🔹 slicers from frontend
+        slicers = request.query_params.dict()
 
         charts_payload = []
 
         for dc in dashboard.dashboard_charts.all().order_by("order"):
             chart = dc.chart
-            rows = []
-            chart_error = None
 
-            # ---------- Excel chart ----------
+            # ---------- Excel ----------
             if chart.excel_data:
                 rows = chart.excel_data
+                transformed_rows = transform_rows_safe(
+                    rows,
+                    calculated_fields=chart.calculated_fields,
+                    logic_rules=chart.logic_rules,
+                    logic_expression=chart.logic_expression,
+                    filters=chart.filters,
+                )
+                charts_payload.append({
+                    "id": chart.id,
+                    "name": chart.name,
+                    "type": chart.chart_type,
+                    "xField": chart.x_field,
+                    "yField": chart.y_field,
+                    "stackedFields": [],
+                    "filters": chart.filters or {},
+                    "selectedFields": chart.selected_fields,
+                    "data": transformed_rows,
+                })
+                continue
 
-            # ---------- QuickBooks / API dataset ----------
-            elif chart.dataset:
+            # ---------- QuickBooks Dataset ----------
+            if chart.dataset:
+                dataset = chart.dataset
+
+                # 🔥 merge dashboard slicers into dataset filters
+                merged_filters = dataset.filters.copy() if dataset.filters else {}
+
+                # Date range slicer
+                if slicers.get("from") and slicers.get("to") and slicers.get("date_field"):
+                    merged_filters.update({
+                        "date_field": slicers["date_field"],
+                        "from": slicers["from"],
+                        "to": slicers["to"],
+                    })
+
+                # Equality slicers (e.g., CustomerRef.name=ABC)
+                equals = merged_filters.get("equals", {})
+                for k, v in slicers.items():
+                    if k in ("from", "to", "date_field"):
+                        continue
+                    equals[k] = v
+                merged_filters["equals"] = equals
+
+                dataset.filters = merged_filters
+
+                # fetch QB data safely
+                cv = ChartViewSet()
+                cv.request = request
+                cv.format_kwarg = None
+
                 try:
-                    dataset = chart.dataset
-                    merged_filters = dataset.filters.copy() if dataset.filters else {}
-
-                    # Merge dashboard slicers into dataset filters
-                    if slicers.get("from") and slicers.get("to") and slicers.get("date_field"):
-                        merged_filters.update({
-                            "date_field": slicers["date_field"],
-                            "from": slicers["from"],
-                            "to": slicers["to"],
-                        })
-
-                    # Equality slicers
-                    equals = merged_filters.get("equals", {})
-                    for k, v in slicers.items():
-                        if k not in ("from", "to", "date_field"):
-                            equals[k] = v
-                    merged_filters["equals"] = equals
-                    dataset.filters = merged_filters
-
-                    # Execute dataset
-                    cv = ChartViewSet()
-                    cv.request = request
-                    cv.format_kwarg = None
                     resp = cv._execute_dataset_with_aggregation(chart)
-
                     rows = resp.data.get("data", []) if isinstance(resp, Response) else []
-
                 except Exception as e:
                     rows = []
-                    chart_error = str(e)
-                    print(f"Failed to fetch QB chart {chart.id}: {chart_error}")
+                    print(f"Failed to fetch QB data for chart {chart.id}: {e}")
 
-            # ---------- Apply transformations ----------
-            if rows:
-                rows = transform_rows_safe(
+                # 🔹 apply calculated fields, logic rules, filters locally
+                transformed_rows = transform_rows_safe(
                     rows,
-                    calculated_fields=getattr(chart, "calculated_fields", []),
-                    logic_rules=getattr(chart, "logic_rules", []),
-                    logic_expression=getattr(chart, "logic_expression", None),
-                    filters=getattr(chart, "filters", None),
+                    calculated_fields=chart.calculated_fields,
+                    logic_rules=chart.logic_rules,
+                    logic_expression=chart.logic_expression,
+                    filters=chart.filters,
                 )
 
-            # ---------- Append chart payload ----------
-            charts_payload.append({
-                "id": chart.id,
-                "name": chart.name,
-                "type": chart.chart_type,
-                "xField": chart.x_field,
-                "yField": chart.y_field,
-                "stackedFields": [],  # extend if needed
-                "filters": chart.filters or {},
-                "selectedFields": chart.selected_fields,
-                "data": rows,
-                "error": chart_error,
-            })
+                charts_payload.append({
+                    "id": chart.id,
+                    "name": chart.name,
+                    "type": chart.chart_type,
+                    "xField": chart.x_field,
+                    "yField": chart.y_field,
+                    "stackedFields": [],
+                    "filters": chart.filters or {},
+                    "selectedFields": chart.selected_fields,
+                    "data": transformed_rows,
+                })
 
         return Response({
             "id": dashboard.id,
