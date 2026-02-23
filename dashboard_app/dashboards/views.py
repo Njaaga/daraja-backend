@@ -1578,23 +1578,26 @@ class DashboardViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["get"])
     def run(self, request, pk=None):
         dashboard = self.get_object()
-    
-        # 🔹 slicers from frontend
+
+        # 🔹 Get slicers from frontend query params
         slicers = request.query_params.dict()
+
         charts_payload = []
-    
+
         for dc in dashboard.dashboard_charts.all().order_by("order"):
             chart = dc.chart
-    
-            # ---------- Excel data ----------
+
+            # ---------- Excel chart ----------
             if chart.excel_data:
-                rows = chart.excel_data
-                try:
-                    rows = transform_rows_safe(rows, chart)
-                except Exception as e:
-                    print(f"[TRANSFORM ERROR] Chart {chart.id}: {e}")
-                    rows = rows  # fallback to raw data
-    
+                # Apply chart-level transforms to excel_data
+                rows = transform_rows_safe(
+                    chart.excel_data,
+                    calculated_fields=chart.calculated_fields or [],
+                    logic_rules=chart.logic_rules or [],
+                    logic_expression=chart.logic_expression or None,
+                    filters=chart.filters or {}
+                )
+
                 charts_payload.append({
                     "id": chart.id,
                     "name": chart.name,
@@ -1607,50 +1610,48 @@ class DashboardViewSet(viewsets.ModelViewSet):
                     "data": rows,
                 })
                 continue
-    
-            # ---------- QuickBooks dataset ----------
+
+            # ---------- QuickBooks / Dataset ----------
             if chart.dataset:
                 dataset = chart.dataset
-    
-                # merge dashboard slicers into dataset filters
+
+                # Merge dashboard slicers into dataset filters
                 merged_filters = dataset.filters.copy() if dataset.filters else {}
-    
-                # date range slicer
+
+                # Date range slicer
                 if slicers.get("from") and slicers.get("to") and slicers.get("date_field"):
                     merged_filters.update({
                         "date_field": slicers["date_field"],
                         "from": slicers["from"],
                         "to": slicers["to"],
                     })
-    
-                # equality slicers
+
+                # Equality slicers (CustomerRef.name=ABC)
                 equals = merged_filters.get("equals", {})
                 for k, v in slicers.items():
                     if k in ("from", "to", "date_field"):
                         continue
                     equals[k] = v
                 merged_filters["equals"] = equals
+
                 dataset.filters = merged_filters
-    
-                # run chart safely (this is your working QB call)
+
+                # Fetch rows from chart's dataset
                 cv = ChartViewSet()
                 cv.request = request
                 cv.format_kwarg = None
                 resp = cv._execute_dataset_with_aggregation(chart)
-    
-                if isinstance(resp, Response):
-                    rows = resp.data.get("data", [])
-                else:
-                    rows = []
-    
-                # safely apply chart filters, logic rules, calculated fields
-                try:
-                    rows = transform_rows_safe(rows, chart)
-                except Exception as e:
-                    print(f"[TRANSFORM ERROR] Chart {chart.id}: {e}")
-                    # fallback: just return the QB data
-                    rows = rows
-    
+                rows = resp.data.get("data", []) if isinstance(resp, Response) else []
+
+                # 🔹 Apply chart-level transforms (logic, filters, calculated fields)
+                rows = transform_rows_safe(
+                    rows,
+                    calculated_fields=chart.calculated_fields or [],
+                    logic_rules=chart.logic_rules or [],
+                    logic_expression=chart.logic_expression or None,
+                    filters=chart.filters or {}
+                )
+
                 charts_payload.append({
                     "id": chart.id,
                     "name": chart.name,
@@ -1662,7 +1663,7 @@ class DashboardViewSet(viewsets.ModelViewSet):
                     "selectedFields": chart.selected_fields,
                     "data": rows,
                 })
-    
+
         return Response({
             "id": dashboard.id,
             "name": dashboard.name,
