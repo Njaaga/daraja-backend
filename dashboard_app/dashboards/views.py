@@ -1245,34 +1245,43 @@ class ChartViewSet(viewsets.ModelViewSet):
     # DATASET + AGGREGATION ENGINE
     # ----------------------------------
     def _execute_dataset_with_aggregation(self, chart):
-        dv = DatasetViewSet()
-        dv.request = self.request
-        dv.format_kwarg = None
+        rows = run_dataset(chart.dataset, self.request)
     
-        response = dv._run_dataset(chart.dataset)
-        rows = response.data.get("data", response.data)
+        print("🔍 DATASET ROWS:", rows)
     
-        if not isinstance(rows, list):
+        if not rows:
             return Response({"type": "dataset", "data": []})
     
         x_field = chart.x_field
+        y_field = chart.y_field
         agg = chart.aggregation or "none"
     
-        # 🔒 Stable Y key (required for COUNT)
-        y_field = chart.y_field or "value"
-    
-        # ----------------------------------
-        # NO AGGREGATION → PASS THROUGH
-        # ----------------------------------
+        # --------------------
+        # NO AGGREGATION
+        # --------------------
         if agg == "none":
+            data = []
+    
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+    
+                if x_field not in row or y_field not in row:
+                    continue
+    
+                data.append({
+                    "x": row[x_field],
+                    "y": row[y_field],
+                })
+    
             return Response({
                 "type": "dataset",
-                "data": rows,
+                "data": data,
             })
     
-        # ----------------------------------
-        # GROUPING
-        # ----------------------------------
+        # --------------------
+        # AGGREGATION
+        # --------------------
         buckets = defaultdict(list)
     
         for row in rows:
@@ -1285,16 +1294,12 @@ class ChartViewSet(viewsets.ModelViewSet):
     
             if agg == "count":
                 buckets[x_val].append(1)
-                continue
+            else:
+                try:
+                    buckets[x_val].append(float(row.get(y_field)))
+                except (TypeError, ValueError):
+                    continue
     
-            try:
-                buckets[x_val].append(float(row.get(chart.y_field)))
-            except (TypeError, ValueError):
-                continue
-    
-        # ----------------------------------
-        # APPLY AGGREGATION
-        # ----------------------------------
         result = []
     
         for x_val, values in buckets.items():
@@ -1309,24 +1314,15 @@ class ChartViewSet(viewsets.ModelViewSet):
                 y_val = min(values)
             elif agg == "max":
                 y_val = max(values)
-            else:  # sum
+            else:
                 y_val = sum(values)
     
             result.append({
-                x_field: x_val,
-                y_field: round(y_val, 2),
+                "x": x_val,
+                "y": round(y_val, 2),
             })
     
-        # ----------------------------------
-        # SORT FOR STABLE CHARTS
-        # ----------------------------------
-        try:
-            result.sort(key=lambda r: r[x_field])
-        except Exception:
-            pass
-    
-        # DEBUG (optional)
-        print("AGGREGATED DATA:", result)
+        result.sort(key=lambda r: r["x"])
     
         return Response({
             "type": "dataset",
