@@ -1581,125 +1581,149 @@ class DashboardViewSet(viewsets.ModelViewSet):
         dashboard = self.get_object()
         slicers = request.query_params.dict()
         charts_payload = []
-    
+
         for dc in dashboard.dashboard_charts.all().order_by("order"):
             chart = dc.chart
-    
-            # Start with base data
+
+            # ---------- Excel Charts ----------
             if chart.excel_data:
-                rows = deepcopy(chart.excel_data)  # avoid mutating original Excel data
-            elif chart.dataset:
+                rows = chart.excel_data.copy()
+
+                # Apply calculated fields
+                for cf in chart.calculated_fields or []:
+                    name, expr = cf.get("name"), cf.get("expr")
+                    for row in rows:
+                        try:
+                            row[name] = eval(expr, {}, row)
+                        except Exception:
+                            row[name] = None
+
+                # Apply logic rules
+                for rule in chart.logic_rules or []:
+                    expr = rule.get("expr")
+                    target_field = rule.get("target_field", "logic_result")
+                    for row in rows:
+                        try:
+                            row[target_field] = eval(expr, {}, row)
+                        except Exception:
+                            row[target_field] = None
+
+                # Apply filters
+                rows = self._apply_filters(rows, chart.filters or {})
+
+                charts_payload.append({
+                    "id": chart.id,
+                    "name": chart.name,
+                    "type": chart.chart_type,
+                    "xField": chart.x_field,
+                    "yField": chart.y_field,
+                    "stackedFields": [],
+                    "filters": chart.filters or {},
+                    "selectedFields": chart.selected_fields,
+                    "data": rows,
+                })
+                continue
+
+            # ---------- QuickBooks / API Datasets ----------
+            if chart.dataset:
                 dataset = chart.dataset
                 merged_filters = (dataset.filters or {}).copy()
-    
-                # Apply slicers
+
+                # Merge slicers (date range)
                 if slicers.get("from") and slicers.get("to") and slicers.get("date_field"):
                     merged_filters.update({
                         "date_field": slicers["date_field"],
                         "from": slicers["from"],
                         "to": slicers["to"],
                     })
-    
+
+                # Equality slicers
                 equals = merged_filters.get("equals", {})
                 for k, v in slicers.items():
                     if k not in ("from", "to", "date_field"):
                         equals[k] = v
                 merged_filters["equals"] = equals
                 dataset.filters = merged_filters
-    
-                # Execute dataset
-                cv = ChartViewSet()
-                cv.request = request
-                cv.format_kwarg = None
-                resp = cv._execute_dataset_with_aggregation(chart)
-                rows = resp.data.get("data", []) if isinstance(resp, Response) else []
-    
-            else:
+
                 rows = []
-    
-            # --------------------------
-            # Apply calculated fields
-            # --------------------------
-            for cf in chart.calculated_fields or []:
-                name = cf.get("name")
-                expr = cf.get("expr")
-                for row in rows:
-                    try:
-                        # Safe eval context
-                        row[name] = eval(expr, {}, row)
-                    except Exception:
-                        row[name] = None
-    
-            # --------------------------
-            # Apply logic rules
-            # --------------------------
-            for rule in chart.logic_rules or []:
-                expr = rule.get("expr")
-                target_field = rule.get("target_field", "logic_result")
-                for row in rows:
-                    try:
-                        row[target_field] = eval(expr, {}, row)
-                    except Exception:
-                        row[target_field] = None
-    
-            # --------------------------
-            # Apply filters
-            # --------------------------
-            for f in chart.filters or []:
-                f_type = f.get("type")
-                if f_type == "text":
-                    op = f.get("operator")
-                    val = f.get("value", "")
-                    if op == "contains":
-                        rows = [r for r in rows if val in str(r.get(f["field"], ""))]
-                    elif op == "equals":
-                        rows = [r for r in rows if str(r.get(f["field"], "")) == val]
-                    elif op == "starts":
-                        rows = [r for r in rows if str(r.get(f["field"], "")).startswith(val)]
-                    elif op == "ends":
-                        rows = [r for r in rows if str(r.get(f["field"], "")).endswith(val)]
-                elif f_type == "number":
-                    min_v, max_v = f.get("min"), f.get("max")
-                    rows = [r for r in rows if (min_v is None or r.get(f["field"], 0) >= float(min_v)) and
-                                             (max_v is None or r.get(f["field"], 0) <= float(max_v))]
-                elif f_type == "date":
-                    # Assume ISO format
-                    start = f.get("startDate")
-                    end = f.get("endDate")
-                    from datetime import datetime
-                    def parse_date(d):
-                        return datetime.fromisoformat(d) if d else None
-                    start_dt, end_dt = parse_date(start), parse_date(end)
-                    rows = [r for r in rows if (not start_dt or parse_date(r.get(f["field"])) >= start_dt) and
-                                             (not end_dt or parse_date(r.get(f["field"])) <= end_dt)]
-                elif f_type == "dropdown":
-                    options = f.get("dropdownOptions", [])
-                    rows = [r for r in rows if r.get(f["field"]) in options]
-                elif f_type == "regex":
-                    import re
-                    pattern = f.get("value")
-                    rows = [r for r in rows if re.search(pattern, str(r.get(f["field"], "")))]
-    
-            # --------------------------
-            # Build chart payload
-            # --------------------------
-            charts_payload.append({
-                "id": chart.id,
-                "name": chart.name,
-                "type": chart.chart_type,
-                "xField": chart.x_field,
-                "yField": chart.y_field,
-                "stackedFields": [],
-                "filters": chart.filters or {},
-                "selectedFields": chart.selected_fields,
-                "data": rows,
-            })
-    
+                try:
+                    cv = ChartViewSet()
+                    cv.request = request
+                    cv.format_kwarg = None
+                    resp = cv._execute_dataset_with_aggregation(chart)
+                    if isinstance(resp, Response):
+                        rows = resp.data.get("data", [])
+                except Exception as e:
+                    print(f"QuickBooks dataset error for chart {chart.id}:", str(e))
+                    traceback.print_exc()
+                    rows = []
+
+                # Only apply calculated fields, logic rules, and filters if rows exist
+                if rows:
+                    # Calculated fields
+                    for cf in chart.calculated_fields or []:
+                        name, expr = cf.get("name"), cf.get("expr")
+                        for row in rows:
+                            try:
+                                row[name] = eval(expr, {}, row)
+                            except Exception:
+                                row[name] = None
+
+                    # Logic rules
+                    for rule in chart.logic_rules or []:
+                        expr = rule.get("expr")
+                        target_field = rule.get("target_field", "logic_result")
+                        for row in rows:
+                            try:
+                                row[target_field] = eval(expr, {}, row)
+                            except Exception:
+                                row[target_field] = None
+
+                    # Filters
+                    rows = self._apply_filters(rows, chart.filters or {})
+
+                charts_payload.append({
+                    "id": chart.id,
+                    "name": chart.name,
+                    "type": chart.chart_type,
+                    "xField": chart.x_field,
+                    "yField": chart.y_field,
+                    "stackedFields": [],
+                    "filters": chart.filters or {},
+                    "selectedFields": chart.selected_fields,
+                    "data": rows,
+                })
+
         return Response({
             "id": dashboard.id,
             "name": dashboard.name,
             "charts": charts_payload,
         })
+
+    # ---------- Helper method for filtering rows ----------
+    def _apply_filters(self, rows, filters):
+        if not filters:
+            return rows
+
+        def check_row(row):
+            # Text equality
+            equals = filters.get("equals", {})
+            for k, v in equals.items():
+                if row.get(k) != v:
+                    return False
+
+            # Number / range filters
+            for f in filters.get("range", []):
+                val = row.get(f["field"])
+                if val is None:
+                    return False
+                if f.get("min") is not None and val < f["min"]:
+                    return False
+                if f.get("max") is not None and val > f["max"]:
+                    return False
+            return True
+
+        return [r for r in rows if check_row(r)]
         
     # ---------- Delete dashboard ----------
     def destroy(self, request, *args, **kwargs):
