@@ -58,6 +58,7 @@ from django.contrib.auth.decorators import login_required
 from dashboards.services.oauth import refresh_quickbooks_token
 from rest_framework.decorators import action
 from collections import defaultdict
+from .services.dataset_runner import request_builder
 
 # ---------------------------
 # USERS
