@@ -1581,6 +1581,7 @@ class DashboardViewSet(viewsets.ModelViewSet):
     
         # 🔹 slicers from frontend
         slicers = request.query_params.dict()
+    
         charts_payload = []
     
         for dc in dashboard.dashboard_charts.all().order_by("order"):
@@ -1588,8 +1589,6 @@ class DashboardViewSet(viewsets.ModelViewSet):
     
             # ---------- Excel ----------
             if chart.excel_data:
-                rows = chart.excel_data
-                rows = transform_rows(rows, chart)  # APPLY FILTERS + LOGIC RULES + CALCS
                 charts_payload.append({
                     "id": chart.id,
                     "name": chart.name,
@@ -1599,7 +1598,7 @@ class DashboardViewSet(viewsets.ModelViewSet):
                     "stackedFields": [],
                     "filters": chart.filters or {},
                     "selectedFields": chart.selected_fields,
-                    "data": rows,
+                    "data": chart.excel_data,
                 })
                 continue
     
@@ -1607,7 +1606,7 @@ class DashboardViewSet(viewsets.ModelViewSet):
             if chart.dataset:
                 dataset = chart.dataset
     
-                # Merge dashboard slicers into dataset filters
+                # 🔥 merge dashboard slicers into dataset filters
                 merged_filters = dataset.filters.copy() if dataset.filters else {}
     
                 # Date range slicer
@@ -1624,19 +1623,17 @@ class DashboardViewSet(viewsets.ModelViewSet):
                     if k in ("from", "to", "date_field"):
                         continue
                     equals[k] = v
+    
                 merged_filters["equals"] = equals
+    
                 dataset.filters = merged_filters
     
-                # Run chart (QB / dataset)
                 cv = ChartViewSet()
                 cv.request = request
                 cv.format_kwarg = None
     
                 resp = cv._execute_dataset_with_aggregation(chart)
                 rows = resp.data.get("data", []) if isinstance(resp, Response) else []
-    
-                # 🔥 Apply chart filters, logic rules, and calculated fields
-                rows = transform_rows(rows, chart)
     
                 charts_payload.append({
                     "id": chart.id,
@@ -1828,5 +1825,4 @@ Message:
 
 
     
-
 
