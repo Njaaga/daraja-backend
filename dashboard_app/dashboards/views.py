@@ -59,6 +59,7 @@ from dashboards.services.oauth import refresh_quickbooks_token
 from rest_framework.decorators import action
 from collections import defaultdict
 from dashboards.services.dataset_runner import run_dataset
+from dashboards.services.transform import transform_rows
 
 # ---------------------------
 # USERS
@@ -1577,16 +1578,16 @@ class DashboardViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["get"])
     def run(self, request, pk=None):
         dashboard = self.get_object()
-    
-        # 🔹 slicers from frontend
+
+        # 🔹 slicers from frontend query params
         slicers = request.query_params.dict()
-    
+
         charts_payload = []
-    
+
         for dc in dashboard.dashboard_charts.all().order_by("order"):
             chart = dc.chart
-    
-            # ---------- Excel ----------
+
+            # ---------- Excel Charts ----------
             if chart.excel_data:
                 charts_payload.append({
                     "id": chart.id,
@@ -1600,14 +1601,14 @@ class DashboardViewSet(viewsets.ModelViewSet):
                     "data": chart.excel_data,
                 })
                 continue
-    
-            # ---------- QuickBooks Dataset ----------
+
+            # ---------- QuickBooks / Dataset Charts ----------
             if chart.dataset:
                 dataset = chart.dataset
-    
-                # 🔥 merge dashboard slicers into dataset filters
+
+                # Merge dashboard slicers into dataset filters
                 merged_filters = dataset.filters.copy() if dataset.filters else {}
-    
+
                 # Date range slicer
                 if slicers.get("from") and slicers.get("to") and slicers.get("date_field"):
                     merged_filters.update({
@@ -1615,37 +1616,43 @@ class DashboardViewSet(viewsets.ModelViewSet):
                         "from": slicers["from"],
                         "to": slicers["to"],
                     })
-    
-                # Equality slicers (CustomerRef.name=ABC)
+
+                # Equality slicers (e.g., CustomerRef.name = ABC)
                 equals = merged_filters.get("equals", {})
                 for k, v in slicers.items():
                     if k in ("from", "to", "date_field"):
                         continue
                     equals[k] = v
-    
                 merged_filters["equals"] = equals
-    
+
                 dataset.filters = merged_filters
-    
+
+                # Execute chart's dataset
                 cv = ChartViewSet()
                 cv.request = request
                 cv.format_kwarg = None
-    
+
                 resp = cv._execute_dataset_with_aggregation(chart)
                 rows = resp.data.get("data", []) if isinstance(resp, Response) else []
-    
+
+                # 🔥 APPLY CHART TRANSFORMATIONS
+                # logic_expressions = calculated fields
+                # logic_rules = boolean gates
+                # filters = chart-level filters
+                rows = transform_rows(rows, chart)
+
                 charts_payload.append({
                     "id": chart.id,
                     "name": chart.name,
                     "type": chart.chart_type,
                     "xField": chart.x_field,
                     "yField": chart.y_field,
-                    "stackedFields": [],
+                    "stackedFields": [],  # add if needed
                     "filters": chart.filters or {},
                     "selectedFields": chart.selected_fields,
                     "data": rows,
                 })
-    
+
         return Response({
             "id": dashboard.id,
             "name": dashboard.name,
