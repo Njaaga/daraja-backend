@@ -1577,12 +1577,16 @@ class DashboardViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["get"])
     def run(self, request, pk=None):
         dashboard = self.get_object()
+    
+        # 🔹 slicers from frontend
+        slicers = request.query_params.dict()
+    
         charts_payload = []
-
+    
         for dc in dashboard.dashboard_charts.all().order_by("order"):
             chart = dc.chart
-
-            # ---------------- Excel charts ----------------
+    
+            # ---------- Excel ----------
             if chart.excel_data:
                 charts_payload.append({
                     "id": chart.id,
@@ -1596,21 +1600,40 @@ class DashboardViewSet(viewsets.ModelViewSet):
                     "data": chart.excel_data,
                 })
                 continue
-
-            # ---------------- QB dataset charts ----------------
+    
+            # ---------- QuickBooks Dataset ----------
             if chart.dataset:
+                dataset = chart.dataset
+    
+                # 🔥 merge dashboard slicers into dataset filters
+                merged_filters = dataset.filters.copy() if dataset.filters else {}
+    
+                # Date range slicer
+                if slicers.get("from") and slicers.get("to") and slicers.get("date_field"):
+                    merged_filters.update({
+                        "date_field": slicers["date_field"],
+                        "from": slicers["from"],
+                        "to": slicers["to"],
+                    })
+    
+                # Equality slicers (CustomerRef.name=ABC)
+                equals = merged_filters.get("equals", {})
+                for k, v in slicers.items():
+                    if k in ("from", "to", "date_field"):
+                        continue
+                    equals[k] = v
+    
+                merged_filters["equals"] = equals
+    
+                dataset.filters = merged_filters
+    
                 cv = ChartViewSet()
-                cv.request = request   # 🔐 tenant + QB token
+                cv.request = request
                 cv.format_kwarg = None
-
+    
                 resp = cv._execute_dataset_with_aggregation(chart)
-
-                rows = (
-                    resp.data.get("data", [])
-                    if isinstance(resp, Response)
-                    else []
-                )
-
+                rows = resp.data.get("data", []) if isinstance(resp, Response) else []
+    
                 charts_payload.append({
                     "id": chart.id,
                     "name": chart.name,
@@ -1622,7 +1645,7 @@ class DashboardViewSet(viewsets.ModelViewSet):
                     "selectedFields": chart.selected_fields,
                     "data": rows,
                 })
-
+    
         return Response({
             "id": dashboard.id,
             "name": dashboard.name,
