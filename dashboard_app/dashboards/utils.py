@@ -145,7 +145,23 @@ def transform_rows_safe(
         return []
 
     rows = copy.deepcopy(rows)
-    rows = apply_calculated_fields(rows, calculated_fields)
-    rows = apply_logic_rules(rows, logic_rules, logic_expression)
-    rows = apply_filters(rows, filters)
+
+    # 1️⃣ Calculated fields
+    try:
+        rows = apply_calculated_fields(rows, calculated_fields)
+    except Exception as e:
+        print(f"[transform_rows_safe] Calculated fields error: {e}")
+
+    # 2️⃣ Logic rules
+    try:
+        rows = apply_logic_rules(rows, logic_rules, logic_expression)
+    except Exception as e:
+        print(f"[transform_rows_safe] Logic rules error: {e}")
+
+    # 3️⃣ Filters
+    try:
+        rows = apply_filters(rows, filters)
+    except Exception as e:
+        print(f"[transform_rows_safe] Filters error: {e}")
+
     return rows
