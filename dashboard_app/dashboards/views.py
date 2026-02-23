@@ -1244,49 +1244,80 @@ class ChartViewSet(viewsets.ModelViewSet):
     # ----------------------------------
     # DATASET + AGGREGATION ENGINE
     # ----------------------------------
+    def _get_value(self, row, field):
+        """
+        Supports dot-notation fields like 'CustomerRef.name'
+        """
+        if not field or not isinstance(row, dict):
+            return None
+    
+        val = row
+        for part in field.split("."):
+            if not isinstance(val, dict):
+                return None
+            val = val.get(part)
+        return val
+    
+    
     def _execute_dataset_with_aggregation(self, chart):
+        # ----------------------------
+        # Run dataset (SAFE)
+        # ----------------------------
         dv = DatasetViewSet()
         dv.request = self.request
         dv.format_kwarg = None
     
         response = dv._run_dataset(chart.dataset)
-        rows = response.data.get("data", response.data)
     
-        if not isinstance(rows, list) or not rows:
+        if not isinstance(response, Response):
+            return Response({"type": "dataset", "data": []})
+    
+        payload = response.data
+    
+        # Normalize rows
+        if isinstance(payload, dict):
+            rows = payload.get("data", [])
+        elif isinstance(payload, list):
+            rows = payload
+        else:
+            rows = []
+    
+        if not rows:
             return Response({"type": "dataset", "data": []})
     
         x_field = chart.x_field
         y_field = chart.y_field
         agg = chart.aggregation or "none"
     
-        # ---------------------------
+        # ----------------------------
         # NO AGGREGATION
-        # ---------------------------
+        # ----------------------------
         if agg == "none":
             return Response({"type": "dataset", "data": rows})
     
+        # ----------------------------
+        # AGGREGATION
+        # ----------------------------
         buckets = defaultdict(list)
     
         for row in rows:
-            if not isinstance(row, dict):
+            x_val = self._get_value(row, x_field)
+    
+            if x_val in (None, ""):
                 continue
     
-            x_val = row.get(x_field)
-    
-            if x_val is None:
-                continue
-    
-            # ✅ COUNT DOES NOT NEED y_field
             if agg == "count":
                 buckets[x_val].append(1)
                 continue
     
-            # Other aggregations require numeric y_field
+            y_val = self._get_value(row, y_field)
+    
             try:
-                y_val = float(row.get(y_field, 0))
-                buckets[x_val].append(y_val)
+                y_val = float(y_val)
             except (TypeError, ValueError):
                 continue
+    
+            buckets[x_val].append(y_val)
     
         result = []
     
@@ -1311,7 +1342,6 @@ class ChartViewSet(viewsets.ModelViewSet):
             })
     
         return Response({"type": "dataset", "data": result})
-
         
 # ---------- Dashboards ----------
 class DashboardViewSet(viewsets.ModelViewSet):
