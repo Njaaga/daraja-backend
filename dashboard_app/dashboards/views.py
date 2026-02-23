@@ -1580,7 +1580,7 @@ class DashboardViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["get"])
     def run(self, request, pk=None):
         dashboard = self.get_object()
-        slicers = request.query_params.dict()  # slicers from frontend
+        slicers = request.query_params.dict()
         charts_payload = []
     
         for dc in dashboard.dashboard_charts.all().order_by("order"):
@@ -1591,12 +1591,12 @@ class DashboardViewSet(viewsets.ModelViewSet):
             if chart.excel_data:
                 rows = chart.excel_data
     
-            # ---------- QuickBooks / Dataset ----------
+            # ---------- QuickBooks Dataset ----------
             elif chart.dataset:
                 dataset = chart.dataset
                 merged_filters = dataset.filters.copy() if dataset.filters else {}
     
-                # Apply date slicer
+                # Date range slicer
                 if slicers.get("from") and slicers.get("to") and slicers.get("date_field"):
                     merged_filters.update({
                         "date_field": slicers["date_field"],
@@ -1604,35 +1604,30 @@ class DashboardViewSet(viewsets.ModelViewSet):
                         "to": slicers["to"],
                     })
     
-                # Equality slicers (CustomerRef.name=ABC)
+                # Equality slicers
                 equals = merged_filters.get("equals", {})
                 for k, v in slicers.items():
-                    if k in ("from", "to", "date_field"):
-                        continue
-                    equals[k] = v
+                    if k not in ("from", "to", "date_field"):
+                        equals[k] = v
                 merged_filters["equals"] = equals
-    
                 dataset.filters = merged_filters
     
-                try:
-                    cv = ChartViewSet()
-                    cv.request = request
-                    cv.format_kwarg = None
-                    resp = cv._execute_dataset_with_aggregation(chart)
-                    if isinstance(resp, Response):
-                        rows = resp.data.get("data", [])
-                except Exception as e:
-                    print(f"[WARNING] QuickBooks fetch failed for chart '{chart.name}': {e}")
-                    rows = []
+                cv = ChartViewSet()
+                cv.request = request
+                cv.format_kwarg = None
     
-            # ---------- Transform data ----------
-            transformed_rows = transform_rows_safe(
-                rows,
-                calculated_fields=chart.calculated_fields,
-                logic_rules=chart.logic_rules,
-                logic_expression=chart.logic_expression,
-                filters=chart.filters,
-            )
+                resp = cv._execute_dataset_with_aggregation(chart)
+                rows = resp.data.get("data", []) if isinstance(resp, Response) else []
+    
+            # ---------- Only apply transforms if rows exist ----------
+            if rows:
+                rows = transform_rows_safe(
+                    rows,
+                    calculated_fields=getattr(chart, "calculated_fields", []),
+                    logic_rules=getattr(chart, "logic_rules", []),
+                    logic_expression=getattr(chart, "logic_expression", None),
+                    filters=getattr(chart, "filters", None),
+                )
     
             charts_payload.append({
                 "id": chart.id,
@@ -1640,10 +1635,10 @@ class DashboardViewSet(viewsets.ModelViewSet):
                 "type": chart.chart_type,
                 "xField": chart.x_field,
                 "yField": chart.y_field,
-                "stackedFields": [],  # can extend if needed
+                "stackedFields": [],
                 "filters": chart.filters or {},
                 "selectedFields": chart.selected_fields,
-                "data": transformed_rows,
+                "data": rows,
             })
     
         return Response({
