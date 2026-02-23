@@ -1426,107 +1426,89 @@ class ChartViewSet(viewsets.ModelViewSet):
         return val
     
     
-    def _execute_dataset_with_aggregation(self, chart, rows_override=None):
-        """
-        Executes a dataset and applies aggregation.
-        If rows_override is provided, aggregation runs on those rows
-        (used by DashboardViewSet after logic/filters are applied).
-        """
+    def _execute_dataset_with_aggregation(self, chart):
+        # ----------------------------
+        # Run dataset (SAFE)
+        # ----------------------------
+        dv = DatasetViewSet()
+        dv.request = self.request
+        dv.format_kwarg = None
     
-        from dashboards.views import DatasetViewSet
-        from rest_framework.response import Response
+        response = dv._run_dataset(chart.dataset)
     
-        # ---------------------------------
-        # 1️⃣ Get rows (either override or fetch)
-        # ---------------------------------
-        if rows_override is not None:
-            rows = rows_override
-        else:
-            dv = DatasetViewSet()
-            dv.request = self.request
-            dv.format_kwarg = None
+        if not isinstance(response, Response):
+            return Response({"type": "dataset", "data": []})
     
-            response = dv._run_dataset(chart.dataset)
-            payload = response.data
+        payload = response.data
+    
+        # Normalize rows
+        if isinstance(payload, dict):
             rows = payload.get("data", [])
+        elif isinstance(payload, list):
+            rows = payload
+        else:
+            rows = []
     
         if not rows:
-            return Response({"data": []})
+            return Response({"type": "dataset", "data": []})
     
-        # ---------------------------------
-        # 2️⃣ No aggregation defined → return rows
-        # ---------------------------------
-        if not chart.aggregation:
-            return Response({"data": rows})
+        x_field = chart.x_field
+        y_field = chart.y_field
+        agg = chart.aggregation or "none"
     
-        group_by = chart.group_by or []
-        metrics = chart.metrics or []
+        # ----------------------------
+        # NO AGGREGATION
+        # ----------------------------
+        if agg == "none":
+            return Response({"type": "dataset", "data": rows})
     
-        if not group_by or not metrics:
-            return Response({"data": rows})
-    
-        # ---------------------------------
-        # 3️⃣ Perform aggregation
-        # ---------------------------------
-        from collections import defaultdict
-    
-        aggregated = defaultdict(lambda: {m["name"]: 0 for m in metrics})
+        # ----------------------------
+        # AGGREGATION
+        # ----------------------------
+        buckets = defaultdict(list)
     
         for row in rows:
-            key = tuple(row.get(field) for field in group_by)
+            x_val = self._get_value(row, x_field)
     
-            for metric in metrics:
-                field = metric.get("field")
-                agg_type = metric.get("aggregation")
-                metric_name = metric.get("name")
+            if x_val in (None, ""):
+                continue
     
-                value = row.get(field)
+            if agg == "count":
+                buckets[x_val].append(1)
+                continue
     
-                if value is None:
-                    continue
+            y_val = self._get_value(row, y_field)
     
-                try:
-                    value = float(value)
-                except Exception:
-                    continue
+            try:
+                y_val = float(y_val)
+            except (TypeError, ValueError):
+                continue
     
-                if agg_type == "sum":
-                    aggregated[key][metric_name] += value
+            buckets[x_val].append(y_val)
     
-                elif agg_type == "count":
-                    aggregated[key][metric_name] += 1
+        result = []
     
-                elif agg_type == "avg":
-                    aggregated[key].setdefault(f"__{metric_name}_sum", 0)
-                    aggregated[key].setdefault(f"__{metric_name}_count", 0)
-                    aggregated[key][f"__{metric_name}_sum"] += value
-                    aggregated[key][f"__{metric_name}_count"] += 1
+        for x_val, values in buckets.items():
+            if not values:
+                continue
     
-        # ---------------------------------
-        # 4️⃣ Finalize averages + format output
-        # ---------------------------------
-        results = []
+            if agg == "count":
+                y_val = len(values)
+            elif agg == "avg":
+                y_val = sum(values) / len(values)
+            elif agg == "min":
+                y_val = min(values)
+            elif agg == "max":
+                y_val = max(values)
+            else:  # sum
+                y_val = sum(values)
     
-        for key, metrics_data in aggregated.items():
-            row = {}
+            result.append({
+                x_field: x_val,
+                y_field or "value": round(y_val, 2),
+            })
     
-            for i, field in enumerate(group_by):
-                row[field] = key[i]
-    
-            for metric in metrics:
-                metric_name = metric.get("name")
-                agg_type = metric.get("aggregation")
-    
-                if agg_type == "avg":
-                    total = metrics_data.get(f"__{metric_name}_sum", 0)
-                    count = metrics_data.get(f"__{metric_name}_count", 0)
-                    row[metric_name] = total / count if count else 0
-                else:
-                    row[metric_name] = metrics_data.get(metric_name, 0)
-    
-            results.append(row)
-    
-        return Response({"data": results})
+        return Response({"type": "dataset", "data": result})
         
 # ---------- Dashboards ----------
 class DashboardViewSet(viewsets.ModelViewSet):
