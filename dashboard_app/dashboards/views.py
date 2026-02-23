@@ -61,6 +61,7 @@ from collections import defaultdict
 from dashboards.services.dataset_runner import run_dataset
 from dashboards.services.transform import transform_rows
 import traceback
+from dashboards.utils import apply_logic_gates, apply_calculated_fields, apply_filters
 
 # ---------------------------
 # USERS
