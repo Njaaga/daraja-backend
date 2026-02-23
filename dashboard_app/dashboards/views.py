@@ -1573,6 +1573,62 @@ class DashboardViewSet(viewsets.ModelViewSet):
 
         return Response(DashboardChartSerializer(dc).data)
 
+    # 🔥 QB DASHBOARD EXECUTION
+    @action(detail=True, methods=["get"])
+    def run(self, request, pk=None):
+        dashboard = self.get_object()
+        charts_payload = []
+
+        for dc in dashboard.dashboard_charts.all().order_by("order"):
+            chart = dc.chart
+
+            # ---------------- Excel charts ----------------
+            if chart.excel_data:
+                charts_payload.append({
+                    "id": chart.id,
+                    "name": chart.name,
+                    "type": chart.chart_type,
+                    "xField": chart.x_field,
+                    "yField": chart.y_field,
+                    "stackedFields": [],
+                    "filters": chart.filters or {},
+                    "selectedFields": chart.selected_fields,
+                    "data": chart.excel_data,
+                })
+                continue
+
+            # ---------------- QB dataset charts ----------------
+            if chart.dataset:
+                cv = ChartViewSet()
+                cv.request = request   # 🔐 tenant + QB token
+                cv.format_kwarg = None
+
+                resp = cv._execute_dataset_with_aggregation(chart)
+
+                rows = (
+                    resp.data.get("data", [])
+                    if isinstance(resp, Response)
+                    else []
+                )
+
+                charts_payload.append({
+                    "id": chart.id,
+                    "name": chart.name,
+                    "type": chart.chart_type,
+                    "xField": chart.x_field,
+                    "yField": chart.y_field,
+                    "stackedFields": [],
+                    "filters": chart.filters or {},
+                    "selectedFields": chart.selected_fields,
+                    "data": rows,
+                })
+
+        return Response({
+            "id": dashboard.id,
+            "name": dashboard.name,
+            "charts": charts_payload,
+        })
+        
     # ---------- Delete dashboard ----------
     def destroy(self, request, *args, **kwargs):
         dashboard = self.get_object()
