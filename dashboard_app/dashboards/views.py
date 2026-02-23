@@ -1671,49 +1671,6 @@ class DashboardViewSet(viewsets.ModelViewSet):
             "charts": charts_payload,
         })
     
-    
-    # ---------------------------
-    # Safe transform utility
-    # ---------------------------
-    def transform_rows_safe(rows, chart):
-        """
-        Applies chart-level filters, logic_rules, and calculated fields
-        safely without breaking the endpoint if an error occurs.
-        """
-        if not rows:
-            return []
-    
-        # 1️⃣ Apply chart.filters
-        filters = chart.filters or {}
-        def passes_filter(row):
-            for f, rule in filters.items():
-                if not rule.get("value"):
-                    continue
-                val = row.get(f)
-                if val is None or str(val).lower().find(str(rule["value"]).lower()) == -1:
-                    return False
-            return True
-        rows = [r for r in rows if passes_filter(r)]
-    
-        # 2️⃣ Apply logic rules (assumes list of safe callables)
-        for rule in chart.logic_rules or []:
-            try:
-                rows = [r for r in rows if rule(r)]
-            except Exception as e:
-                print(f"[LOGIC RULE ERROR] {e}")
-                continue
-    
-        # 3️⃣ Apply calculated fields
-        exprs = chart.logic_expression or {}
-        for r in rows:
-            for field, expr in exprs.items():
-                try:
-                    # safe eval using row dict only
-                    r[field] = eval(expr, {}, r)
-                except Exception:
-                    r[field] = None
-    
-        return rows
         
     # ---------- Delete dashboard ----------
     def destroy(self, request, *args, **kwargs):
