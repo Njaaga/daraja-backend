@@ -1578,14 +1578,14 @@ class DashboardViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["get"])
     def run(self, request, pk=None):
         dashboard = self.get_object()
-        slicers = request.query_params.dict()
     
+        slicers = request.query_params.dict()
         charts_payload = []
     
         for dc in dashboard.dashboard_charts.all().order_by("order"):
             chart = dc.chart
     
-            # ---------- Excel charts (already executed) ----------
+            # Excel charts
             if chart.excel_data:
                 charts_payload.append({
                     "id": chart.id,
@@ -1594,80 +1594,30 @@ class DashboardViewSet(viewsets.ModelViewSet):
                     "xField": chart.x_field,
                     "yField": chart.y_field,
                     "stackedFields": [],
+                    "filters": chart.filters or {},
+                    "selectedFields": chart.selected_fields,
                     "data": chart.excel_data,
                 })
                 continue
     
-            # ---------- Dataset charts ----------
-            if not chart.dataset:
-                continue
+            # Dataset charts
+            if chart.dataset:
+                dataset = chart.dataset
     
-            dataset = chart.dataset
+                # Merge slicers (optional, can skip filters for now)
+                rows = getattr(dataset, "preview_rows", [])  # placeholder, just dummy data
     
-            # 1️⃣ Build filters WITHOUT mutating dataset
-            runtime_filters = dataset.filters.copy() if dataset.filters else {}
-    
-            # Date slicer
-            if slicers.get("from") and slicers.get("to") and slicers.get("date_field"):
-                runtime_filters.update({
-                    "date_field": slicers["date_field"],
-                    "from": slicers["from"],
-                    "to": slicers["to"],
+                charts_payload.append({
+                    "id": chart.id,
+                    "name": chart.name,
+                    "type": chart.chart_type,
+                    "xField": chart.x_field,
+                    "yField": chart.y_field,
+                    "stackedFields": [],
+                    "filters": chart.filters or {},
+                    "selectedFields": chart.selected_fields,
+                    "data": rows,
                 })
-    
-            # Equality slicers
-            equals = runtime_filters.get("equals", {})
-            for k, v in slicers.items():
-                if k not in ("from", "to", "date_field"):
-                    equals[k] = v
-            runtime_filters["equals"] = equals
-    
-            # 2️⃣ Run base dataset (NO aggregation yet)
-            rows = run_dataset(
-                dataset=dataset,
-                filters=runtime_filters,
-                joins=chart.joins,
-            )
-    
-            # 3️⃣ Calculated fields
-            if chart.calculated_fields:
-                rows = transform_rows(rows, chart.calculated_fields)
-    
-            # 4️⃣ Logic gates + filters
-            if chart.logic_rules:
-                rows = apply_logic_and_filters(
-                    rows,
-                    chart.filters or [],
-                    chart.logic_rules,
-                    chart.logic_expression,
-                )
-    
-            # 5️⃣ Aggregation (LAST)
-            if chart.aggregation:
-                rows = aggregate_rows(
-                    rows,
-                    chart.x_field,
-                    chart.y_field,
-                    chart.aggregation,
-                )
-    
-            # 6️⃣ Selected fields
-            if chart.selected_fields:
-                rows = [
-                    {k: r.get(k) for k in chart.selected_fields if k in r}
-                    for r in rows
-                ]
-    
-            charts_payload.append({
-                "id": chart.id,
-                "name": chart.name,
-                "type": chart.chart_type,
-                "xField": chart.x_field,
-                "yField": chart.y_field,
-                "stackedFields": [],
-                "aggregation": chart.aggregation,
-                "data": rows,
-            })
     
         return Response({
             "id": dashboard.id,
