@@ -1581,14 +1581,20 @@ class DashboardViewSet(viewsets.ModelViewSet):
     
         # 🔹 slicers from frontend
         slicers = request.query_params.dict()
-    
         charts_payload = []
     
         for dc in dashboard.dashboard_charts.all().order_by("order"):
             chart = dc.chart
     
-            # ---------- Excel ----------
+            # ---------- Excel data ----------
             if chart.excel_data:
+                rows = chart.excel_data
+                try:
+                    rows = transform_rows_safe(rows, chart)
+                except Exception as e:
+                    print(f"[TRANSFORM ERROR] Chart {chart.id}: {e}")
+                    rows = rows  # fallback to raw data
+    
                 charts_payload.append({
                     "id": chart.id,
                     "name": chart.name,
@@ -1598,18 +1604,18 @@ class DashboardViewSet(viewsets.ModelViewSet):
                     "stackedFields": [],
                     "filters": chart.filters or {},
                     "selectedFields": chart.selected_fields,
-                    "data": chart.excel_data,
+                    "data": rows,
                 })
                 continue
     
-            # ---------- QuickBooks Dataset ----------
+            # ---------- QuickBooks dataset ----------
             if chart.dataset:
                 dataset = chart.dataset
     
-                # 🔥 merge dashboard slicers into dataset filters
+                # merge dashboard slicers into dataset filters
                 merged_filters = dataset.filters.copy() if dataset.filters else {}
     
-                # Date range slicer
+                # date range slicer
                 if slicers.get("from") and slicers.get("to") and slicers.get("date_field"):
                     merged_filters.update({
                         "date_field": slicers["date_field"],
@@ -1617,23 +1623,33 @@ class DashboardViewSet(viewsets.ModelViewSet):
                         "to": slicers["to"],
                     })
     
-                # Equality slicers (CustomerRef.name=ABC)
+                # equality slicers
                 equals = merged_filters.get("equals", {})
                 for k, v in slicers.items():
                     if k in ("from", "to", "date_field"):
                         continue
                     equals[k] = v
-    
                 merged_filters["equals"] = equals
-    
                 dataset.filters = merged_filters
     
+                # run chart safely (this is your working QB call)
                 cv = ChartViewSet()
                 cv.request = request
                 cv.format_kwarg = None
-    
                 resp = cv._execute_dataset_with_aggregation(chart)
-                rows = resp.data.get("data", []) if isinstance(resp, Response) else []
+    
+                if isinstance(resp, Response):
+                    rows = resp.data.get("data", [])
+                else:
+                    rows = []
+    
+                # safely apply chart filters, logic rules, calculated fields
+                try:
+                    rows = transform_rows_safe(rows, chart)
+                except Exception as e:
+                    print(f"[TRANSFORM ERROR] Chart {chart.id}: {e}")
+                    # fallback: just return the QB data
+                    rows = rows
     
                 charts_payload.append({
                     "id": chart.id,
@@ -1652,6 +1668,50 @@ class DashboardViewSet(viewsets.ModelViewSet):
             "name": dashboard.name,
             "charts": charts_payload,
         })
+    
+    
+    # ---------------------------
+    # Safe transform utility
+    # ---------------------------
+    def transform_rows_safe(rows, chart):
+        """
+        Applies chart-level filters, logic_rules, and calculated fields
+        safely without breaking the endpoint if an error occurs.
+        """
+        if not rows:
+            return []
+    
+        # 1️⃣ Apply chart.filters
+        filters = chart.filters or {}
+        def passes_filter(row):
+            for f, rule in filters.items():
+                if not rule.get("value"):
+                    continue
+                val = row.get(f)
+                if val is None or str(val).lower().find(str(rule["value"]).lower()) == -1:
+                    return False
+            return True
+        rows = [r for r in rows if passes_filter(r)]
+    
+        # 2️⃣ Apply logic rules (assumes list of safe callables)
+        for rule in chart.logic_rules or []:
+            try:
+                rows = [r for r in rows if rule(r)]
+            except Exception as e:
+                print(f"[LOGIC RULE ERROR] {e}")
+                continue
+    
+        # 3️⃣ Apply calculated fields
+        exprs = chart.logic_expression or {}
+        for r in rows:
+            for field, expr in exprs.items():
+                try:
+                    # safe eval using row dict only
+                    r[field] = eval(expr, {}, r)
+                except Exception:
+                    r[field] = None
+    
+        return rows
         
     # ---------- Delete dashboard ----------
     def destroy(self, request, *args, **kwargs):
