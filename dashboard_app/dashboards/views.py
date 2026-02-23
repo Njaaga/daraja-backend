@@ -60,7 +60,6 @@ from rest_framework.decorators import action
 from collections import defaultdict
 from dashboards.services.dataset_runner import run_dataset
 from dashboards.services.transform import transform_rows
-from dashboards.utils import transform_rows_safe
 
 # ---------------------------
 # USERS
@@ -1579,26 +1578,17 @@ class DashboardViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["get"])
     def run(self, request, pk=None):
         dashboard = self.get_object()
-
-        # 🔹 Get slicers from frontend query params
+    
+        # 🔹 slicers from frontend
         slicers = request.query_params.dict()
-
+    
         charts_payload = []
-
+    
         for dc in dashboard.dashboard_charts.all().order_by("order"):
             chart = dc.chart
-
-            # ---------- Excel chart ----------
+    
+            # ---------- Excel ----------
             if chart.excel_data:
-                # Apply chart-level transforms to excel_data
-                rows = transform_rows_safe(
-                    chart.excel_data,
-                    calculated_fields=chart.calculated_fields or [],
-                    logic_rules=chart.logic_rules or [],
-                    logic_expression=chart.logic_expression or None,
-                    filters=chart.filters or {}
-                )
-
                 charts_payload.append({
                     "id": chart.id,
                     "name": chart.name,
@@ -1608,17 +1598,17 @@ class DashboardViewSet(viewsets.ModelViewSet):
                     "stackedFields": [],
                     "filters": chart.filters or {},
                     "selectedFields": chart.selected_fields,
-                    "data": rows,
+                    "data": chart.excel_data,
                 })
                 continue
-
-            # ---------- QuickBooks / Dataset ----------
+    
+            # ---------- QuickBooks Dataset ----------
             if chart.dataset:
                 dataset = chart.dataset
-
-                # Merge dashboard slicers into dataset filters
+    
+                # 🔥 merge dashboard slicers into dataset filters
                 merged_filters = dataset.filters.copy() if dataset.filters else {}
-
+    
                 # Date range slicer
                 if slicers.get("from") and slicers.get("to") and slicers.get("date_field"):
                     merged_filters.update({
@@ -1626,33 +1616,25 @@ class DashboardViewSet(viewsets.ModelViewSet):
                         "from": slicers["from"],
                         "to": slicers["to"],
                     })
-
+    
                 # Equality slicers (CustomerRef.name=ABC)
                 equals = merged_filters.get("equals", {})
                 for k, v in slicers.items():
                     if k in ("from", "to", "date_field"):
                         continue
                     equals[k] = v
+    
                 merged_filters["equals"] = equals
-
+    
                 dataset.filters = merged_filters
-
-                # Fetch rows from chart's dataset
+    
                 cv = ChartViewSet()
                 cv.request = request
                 cv.format_kwarg = None
+    
                 resp = cv._execute_dataset_with_aggregation(chart)
                 rows = resp.data.get("data", []) if isinstance(resp, Response) else []
-
-                # 🔹 Apply chart-level transforms (logic, filters, calculated fields)
-                rows = transform_rows_safe(
-                    rows,
-                    calculated_fields=chart.calculated_fields or [],
-                    logic_rules=chart.logic_rules or [],
-                    logic_expression=chart.logic_expression or None,
-                    filters=chart.filters or {}
-                )
-
+    
                 charts_payload.append({
                     "id": chart.id,
                     "name": chart.name,
@@ -1664,13 +1646,12 @@ class DashboardViewSet(viewsets.ModelViewSet):
                     "selectedFields": chart.selected_fields,
                     "data": rows,
                 })
-
+    
         return Response({
             "id": dashboard.id,
             "name": dashboard.name,
             "charts": charts_payload,
         })
-    
         
     # ---------- Delete dashboard ----------
     def destroy(self, request, *args, **kwargs):
