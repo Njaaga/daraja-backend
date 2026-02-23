@@ -836,8 +836,7 @@ class DatasetViewSet(viewsets.ModelViewSet):
     def _run_dataset(self, dataset):
         """
         Executes a dataset against its data source.
-        QuickBooks queries will use entity & fields saved in the dataset table.
-        Generic REST APIs are handled as before.
+        Supports QuickBooks (POST /query) and generic REST APIs.
         """
         source = dataset.api_source
         params = dataset.query_params.copy() if dataset.query_params else {}
@@ -865,10 +864,10 @@ class DatasetViewSet(viewsets.ModelViewSet):
             headers = {
                 "Authorization": f"Bearer {source.bearer_token}",
                 "Accept": "application/json",
-                "Content-Type": "application/text",
+                "Content-Type": "application/text",  # QB expects raw query in body
             }
     
-            # Use entity & fields from dataset DB table
+            # Get entity & fields
             entity = getattr(dataset, "entity", None)
             fields = getattr(dataset, "fields", None)
     
@@ -877,20 +876,18 @@ class DatasetViewSet(viewsets.ModelViewSet):
                     {"error": "QuickBooks entity must be selected."},
                     status=status.HTTP_400_BAD_REQUEST
                 )
-    
             if not fields or not isinstance(fields, list) or len(fields) == 0:
                 return Response(
                     {"error": "Select at least one field for QuickBooks entity."},
                     status=status.HTTP_400_BAD_REQUEST
                 )
     
-            # Build QuickBooks SQL query
+            # Build query
             query = f"SELECT {', '.join(fields)} FROM {entity}"
-    
             filters = getattr(dataset, "filters", {}) or {}
             where_clauses = []
     
-            # Date filter
+            # Date range filter
             if filters.get("date_field") and filters.get("from") and filters.get("to"):
                 where_clauses.append(
                     f"{filters['date_field']} BETWEEN '{filters['from']}' AND '{filters['to']}'"
@@ -904,19 +901,23 @@ class DatasetViewSet(viewsets.ModelViewSet):
                 query += " WHERE " + " AND ".join(where_clauses)
     
             url = f"{source.base_url}/query"
-            params["query"] = query
+    
+            # Debug logs
+            print("[QB QUERY]", query)
+            print("[QB URL]", url)
     
             try:
-                resp = requests.get(url, headers=headers, params=params, timeout=20)
+                resp = requests.post(url, data=query, headers=headers, timeout=20)
                 resp.raise_for_status()
                 payload = resp.json()
+                print("[QB RESPONSE]", payload)
             except requests.RequestException as e:
                 return Response(
                     {"error": "QuickBooks request failed", "details": str(e), "query": query},
                     status=status.HTTP_502_BAD_GATEWAY
                 )
     
-            # Handle QuickBooks logical errors
+            # Check QuickBooks logical errors
             if "Fault" in payload:
                 return Response(
                     {"error": "QuickBooks API error", "details": payload["Fault"], "query": query},
@@ -932,6 +933,7 @@ class DatasetViewSet(viewsets.ModelViewSet):
                     "data": []
                 })
     
+            # Extract rows (QB returns key by entity name)
             entity_key = next(iter(query_response.keys()), None)
             rows = query_response.get(entity_key, []) if entity_key else []
     
