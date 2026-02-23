@@ -1580,75 +1580,78 @@ class DashboardViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["get"])
     def run(self, request, pk=None):
         dashboard = self.get_object()
-    
-        # 🔹 slicers from frontend
-        slicers = request.query_params.dict()
-    
+        slicers = request.query_params.dict()  # dashboard-level slicers
+
         charts_payload = []
-    
+
         for dc in dashboard.dashboard_charts.all().order_by("order"):
             chart = dc.chart
-    
-            # ---------- Excel ----------
+            rows = []
+            chart_error = None
+
+            # ---------- Excel chart ----------
             if chart.excel_data:
-                charts_payload.append({
-                    "id": chart.id,
-                    "name": chart.name,
-                    "type": chart.chart_type,
-                    "xField": chart.x_field,
-                    "yField": chart.y_field,
-                    "stackedFields": [],
-                    "filters": chart.filters or {},
-                    "selectedFields": chart.selected_fields,
-                    "data": chart.excel_data,
-                })
-                continue
-    
-            # ---------- QuickBooks Dataset ----------
-            if chart.dataset:
-                dataset = chart.dataset
-    
-                # 🔥 merge dashboard slicers into dataset filters
-                merged_filters = dataset.filters.copy() if dataset.filters else {}
-    
-                # Date range slicer
-                if slicers.get("from") and slicers.get("to") and slicers.get("date_field"):
-                    merged_filters.update({
-                        "date_field": slicers["date_field"],
-                        "from": slicers["from"],
-                        "to": slicers["to"],
-                    })
-    
-                # Equality slicers (CustomerRef.name=ABC)
-                equals = merged_filters.get("equals", {})
-                for k, v in slicers.items():
-                    if k in ("from", "to", "date_field"):
-                        continue
-                    equals[k] = v
-    
-                merged_filters["equals"] = equals
-    
-                dataset.filters = merged_filters
-    
-                cv = ChartViewSet()
-                cv.request = request
-                cv.format_kwarg = None
-    
-                resp = cv._execute_dataset_with_aggregation(chart)
-                rows = resp.data.get("data", []) if isinstance(resp, Response) else []
-    
-                charts_payload.append({
-                    "id": chart.id,
-                    "name": chart.name,
-                    "type": chart.chart_type,
-                    "xField": chart.x_field,
-                    "yField": chart.y_field,
-                    "stackedFields": [],
-                    "filters": chart.filters or {},
-                    "selectedFields": chart.selected_fields,
-                    "data": rows,
-                })
-    
+                rows = chart.excel_data
+
+            # ---------- QuickBooks / API dataset ----------
+            elif chart.dataset:
+                try:
+                    dataset = chart.dataset
+                    merged_filters = dataset.filters.copy() if dataset.filters else {}
+
+                    # Merge dashboard slicers into dataset filters
+                    if slicers.get("from") and slicers.get("to") and slicers.get("date_field"):
+                        merged_filters.update({
+                            "date_field": slicers["date_field"],
+                            "from": slicers["from"],
+                            "to": slicers["to"],
+                        })
+
+                    # Equality slicers
+                    equals = merged_filters.get("equals", {})
+                    for k, v in slicers.items():
+                        if k not in ("from", "to", "date_field"):
+                            equals[k] = v
+                    merged_filters["equals"] = equals
+                    dataset.filters = merged_filters
+
+                    # Execute dataset
+                    cv = ChartViewSet()
+                    cv.request = request
+                    cv.format_kwarg = None
+                    resp = cv._execute_dataset_with_aggregation(chart)
+
+                    rows = resp.data.get("data", []) if isinstance(resp, Response) else []
+
+                except Exception as e:
+                    rows = []
+                    chart_error = str(e)
+                    print(f"Failed to fetch QB chart {chart.id}: {chart_error}")
+
+            # ---------- Apply transformations ----------
+            if rows:
+                rows = transform_rows_safe(
+                    rows,
+                    calculated_fields=getattr(chart, "calculated_fields", []),
+                    logic_rules=getattr(chart, "logic_rules", []),
+                    logic_expression=getattr(chart, "logic_expression", None),
+                    filters=getattr(chart, "filters", None),
+                )
+
+            # ---------- Append chart payload ----------
+            charts_payload.append({
+                "id": chart.id,
+                "name": chart.name,
+                "type": chart.chart_type,
+                "xField": chart.x_field,
+                "yField": chart.y_field,
+                "stackedFields": [],  # extend if needed
+                "filters": chart.filters or {},
+                "selectedFields": chart.selected_fields,
+                "data": rows,
+                "error": chart_error,
+            })
+
         return Response({
             "id": dashboard.id,
             "name": dashboard.name,
