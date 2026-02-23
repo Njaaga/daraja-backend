@@ -1580,20 +1580,35 @@ class DashboardViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["get"])
     def run(self, request, pk=None):
         dashboard = self.get_object()
+    
+        # 🔹 slicers from frontend
         slicers = request.query_params.dict()
+    
         charts_payload = []
     
         for dc in dashboard.dashboard_charts.all().order_by("order"):
             chart = dc.chart
-            rows = []
     
             # ---------- Excel ----------
             if chart.excel_data:
-                rows = chart.excel_data
+                charts_payload.append({
+                    "id": chart.id,
+                    "name": chart.name,
+                    "type": chart.chart_type,
+                    "xField": chart.x_field,
+                    "yField": chart.y_field,
+                    "stackedFields": [],
+                    "filters": chart.filters or {},
+                    "selectedFields": chart.selected_fields,
+                    "data": chart.excel_data,
+                })
+                continue
     
             # ---------- QuickBooks Dataset ----------
-            elif chart.dataset:
+            if chart.dataset:
                 dataset = chart.dataset
+    
+                # 🔥 merge dashboard slicers into dataset filters
                 merged_filters = dataset.filters.copy() if dataset.filters else {}
     
                 # Date range slicer
@@ -1604,12 +1619,15 @@ class DashboardViewSet(viewsets.ModelViewSet):
                         "to": slicers["to"],
                     })
     
-                # Equality slicers
+                # Equality slicers (CustomerRef.name=ABC)
                 equals = merged_filters.get("equals", {})
                 for k, v in slicers.items():
-                    if k not in ("from", "to", "date_field"):
-                        equals[k] = v
+                    if k in ("from", "to", "date_field"):
+                        continue
+                    equals[k] = v
+    
                 merged_filters["equals"] = equals
+    
                 dataset.filters = merged_filters
     
                 cv = ChartViewSet()
@@ -1619,27 +1637,17 @@ class DashboardViewSet(viewsets.ModelViewSet):
                 resp = cv._execute_dataset_with_aggregation(chart)
                 rows = resp.data.get("data", []) if isinstance(resp, Response) else []
     
-            # ---------- Only apply transforms if rows exist ----------
-            if rows:
-                rows = transform_rows_safe(
-                    rows,
-                    calculated_fields=getattr(chart, "calculated_fields", []),
-                    logic_rules=getattr(chart, "logic_rules", []),
-                    logic_expression=getattr(chart, "logic_expression", None),
-                    filters=getattr(chart, "filters", None),
-                )
-    
-            charts_payload.append({
-                "id": chart.id,
-                "name": chart.name,
-                "type": chart.chart_type,
-                "xField": chart.x_field,
-                "yField": chart.y_field,
-                "stackedFields": [],
-                "filters": chart.filters or {},
-                "selectedFields": chart.selected_fields,
-                "data": rows,
-            })
+                charts_payload.append({
+                    "id": chart.id,
+                    "name": chart.name,
+                    "type": chart.chart_type,
+                    "xField": chart.x_field,
+                    "yField": chart.y_field,
+                    "stackedFields": [],
+                    "filters": chart.filters or {},
+                    "selectedFields": chart.selected_fields,
+                    "data": rows,
+                })
     
         return Response({
             "id": dashboard.id,
