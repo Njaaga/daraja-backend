@@ -1222,26 +1222,190 @@ class ChartViewSet(viewsets.ModelViewSet):
     # ----------------------------------
     # RUNTIME EXECUTION
     # ----------------------------------
-    @action(detail=True, methods=["post"])
-    def run(self, request, pk=None):
-        chart = self.get_object()
+    @action(detail=False, methods=["post"], url_path="run")
+    def run(self, request):
+        dataset_id = request.data.get("dataset_id")
+        if not dataset_id:
+            return Response({"error": "dataset_id is required"}, status=status.HTTP_400_BAD_REQUEST)
 
-        # ----------------------------
-        # Excel-based charts
-        # ----------------------------
-        if chart.excel_data:
+        # Fetch dataset object
+        try:
+            dataset = Dataset.objects.get(pk=dataset_id)
+        except Dataset.DoesNotExist:
+            return Response({"error": "Dataset not found"}, status=status.HTTP_404_NOT_FOUND)
+
+        # Run dataset (QB or other)
+        result_response = self._run_dataset(dataset)
+
+        # If the response is already an error Response, return it
+        if isinstance(result_response, Response):
+            return result_response
+
+        # Extract data safely
+        data = result_response.get("data", [])
+        count = len(data) if isinstance(data, list) else 0
+        fields = result_response.get("fields", [])
+        entity = result_response.get("entity", "")
+
+        # Ensure consistent empty chart payload
+        if count == 0:
+            chart_payload = {
+                "entity": entity,
+                "fields": fields,
+                "count": 0,
+                "data": [],
+                "message": "No data returned for this dataset."
+            }
+        else:
+            chart_payload = {
+                "entity": entity,
+                "fields": fields,
+                "count": count,
+                "data": data
+            }
+
+        return Response(chart_payload, status=status.HTTP_200_OK)
+
+    def _run_dataset(self, dataset):
+        """
+        Executes a dataset against its data source.
+        Supports QuickBooks (POST /query) and generic REST APIs.
+        """
+        source = dataset.api_source
+        params = dataset.query_params.copy() if dataset.query_params else {}
+        headers = {}
+    
+        # ---------------- QuickBooks ----------------
+        if source.provider.lower() == "quickbooks":
+            # Ensure credentials
+            if not source.bearer_token or not source.base_url:
+                return Response(
+                    {"error": "QuickBooks access token or base URL missing."},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+    
+            # Refresh token if expired
+            if getattr(source, "oauth_token_expires_at", None) and source.oauth_token_expires_at <= timezone.now():
+                try:
+                    refresh_quickbooks_token(source)
+                except requests.RequestException as e:
+                    return Response(
+                        {"error": f"Failed to refresh QuickBooks token: {str(e)}"},
+                        status=status.HTTP_502_BAD_GATEWAY
+                    )
+    
+            headers = {
+                "Authorization": f"Bearer {source.bearer_token}",
+                "Accept": "application/json",
+                "Content-Type": "application/text",  # QB expects raw query in body
+            }
+    
+            # Get entity & fields
+            entity = getattr(dataset, "entity", None)
+            fields = getattr(dataset, "fields", None)
+    
+            if not entity:
+                return Response(
+                    {"error": "QuickBooks entity must be selected."},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            if not fields or not isinstance(fields, list) or len(fields) == 0:
+                return Response(
+                    {"error": "Select at least one field for QuickBooks entity."},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+    
+            # Build query
+            query = f"SELECT {', '.join(fields)} FROM {entity}"
+            filters = getattr(dataset, "filters", {}) or {}
+            where_clauses = []
+    
+            # Date range filter
+            if filters.get("date_field") and filters.get("from") and filters.get("to"):
+                where_clauses.append(
+                    f"{filters['date_field']} BETWEEN '{filters['from']}' AND '{filters['to']}'"
+                )
+    
+            # Equals filters
+            for k, v in filters.get("equals", {}).items():
+                where_clauses.append(f"{k} = '{v}'")
+    
+            if where_clauses:
+                query += " WHERE " + " AND ".join(where_clauses)
+    
+            url = f"{source.base_url}/query"
+    
+            # Debug logs
+            print("[QB QUERY]", query)
+            print("[QB URL]", url)
+    
+            try:
+                resp = requests.post(url, data=query, headers=headers, timeout=20)
+                resp.raise_for_status()
+                payload = resp.json()
+                print("[QB RESPONSE]", payload)
+            except requests.RequestException as e:
+                return Response(
+                    {"error": "QuickBooks request failed", "details": str(e), "query": query},
+                    status=status.HTTP_502_BAD_GATEWAY
+                )
+    
+            # Check QuickBooks logical errors
+            if "Fault" in payload:
+                return Response(
+                    {"error": "QuickBooks API error", "details": payload["Fault"], "query": query},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+    
+            query_response = payload.get("QueryResponse", {})
+            if not query_response:
+                return Response({
+                    "entity": entity,
+                    "fields": fields,
+                    "count": 0,
+                    "data": []
+                })
+    
+            # Extract rows (QB returns key by entity name)
+            entity_key = next(iter(query_response.keys()), None)
+            rows = query_response.get(entity_key, []) if entity_key else []
+    
             return Response({
-                "type": "excel",
-                "data": chart.excel_data,
+                "entity": entity,
+                "fields": fields,
+                "count": len(rows),
+                "data": rows,
             })
-
-        if not chart.dataset:
-            return Response(
-                {"error": "Chart has no dataset"},
-                status=status.HTTP_400_BAD_REQUEST,
+    
+        # ---------------- Generic REST APIs ----------------
+        else:
+            url = urljoin(
+                source.base_url.rstrip("/") + "/",
+                (dataset.endpoint or "").lstrip("/")
             )
-
-        return self._execute_dataset_with_aggregation(chart)
+    
+            if source.auth_type == "API_KEY_HEADER" and source.api_key:
+                headers[source.api_key_header] = source.api_key
+            elif source.auth_type == "BEARER" and source.api_key:
+                headers["Authorization"] = f"Bearer {source.api_key}"
+            elif source.auth_type == "API_KEY_QUERY" and source.api_key:
+                params[source.api_key_header] = source.api_key
+    
+            try:
+                resp = requests.get(url, headers=headers, params=params, timeout=20)
+                resp.raise_for_status()
+                data = resp.json()
+            except requests.RequestException as e:
+                return Response({"error": str(e)}, status=status.HTTP_502_BAD_GATEWAY)
+    
+            # Flatten standard API responses
+            if isinstance(data, dict):
+                for k in ("results", "data", "rows"):
+                    if k in data and isinstance(data[k], list):
+                        data = data[k]
+                        break
+    
+            return Response({"data": data})
 
     # ----------------------------------
     # DATASET + AGGREGATION ENGINE
