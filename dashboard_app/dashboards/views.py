@@ -60,7 +60,7 @@ from rest_framework.decorators import action
 from collections import defaultdict
 from dashboards.services.dataset_runner import run_dataset
 from dashboards.services.transform import transform_rows
-from copy import deepcopy
+import traceback
 
 # ---------------------------
 # USERS
