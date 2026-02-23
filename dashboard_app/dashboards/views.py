@@ -1595,81 +1595,81 @@ class DashboardViewSet(viewsets.ModelViewSet):
     # 🔥 QB DASHBOARD EXECUTION
     @action(detail=True, methods=["get"])
     def run(self, request, pk=None):
+        """
+        Executes all charts in a dashboard.
+        Applies chart-level logic BEFORE aggregation.
+        """
+    
+        from dashboards.views import DatasetViewSet, ChartViewSet
+        from dashboards.services.transform import transform_rows
+        from rest_framework.response import Response
+    
         dashboard = self.get_object()
+        charts = dashboard.charts.all()
     
-        # 🔹 slicers from frontend
-        slicers = request.query_params.dict()
+        results = []
     
-        charts_payload = []
-    
-        for dc in dashboard.dashboard_charts.all().order_by("order"):
-            chart = dc.chart
-    
-            # ---------- Excel ----------
-            if chart.excel_data:
-                charts_payload.append({
-                    "id": chart.id,
-                    "name": chart.name,
-                    "type": chart.chart_type,
-                    "xField": chart.x_field,
-                    "yField": chart.y_field,
-                    "stackedFields": [],
-                    "filters": chart.filters or {},
-                    "selectedFields": chart.selected_fields,
-                    "data": chart.excel_data,
+        for chart in charts:
+            dataset = chart.dataset
+            if not dataset:
+                results.append({
+                    "chart_id": chart.id,
+                    "title": chart.title,
+                    "data": []
                 })
                 continue
     
-            # ---------- QuickBooks Dataset ----------
-            if chart.dataset:
-                dataset = chart.dataset
+            # ---------------------------------
+            # 1️⃣ Fetch raw dataset rows
+            # ---------------------------------
+            dv = DatasetViewSet()
+            dv.request = request
+            dv.format_kwarg = None
     
-                # 🔥 merge dashboard slicers into dataset filters
-                merged_filters = dataset.filters.copy() if dataset.filters else {}
+            dataset_resp = dv._run_dataset(dataset)
     
-                # Date range slicer
-                if slicers.get("from") and slicers.get("to") and slicers.get("date_field"):
-                    merged_filters.update({
-                        "date_field": slicers["date_field"],
-                        "from": slicers["from"],
-                        "to": slicers["to"],
-                    })
+            raw_rows = (
+                dataset_resp.data.get("data", [])
+                if dataset_resp and hasattr(dataset_resp, "data")
+                else []
+            )
     
-                # Equality slicers (CustomerRef.name=ABC)
-                equals = merged_filters.get("equals", {})
-                for k, v in slicers.items():
-                    if k in ("from", "to", "date_field"):
-                        continue
-                    equals[k] = v
+            # ---------------------------------
+            # 2️⃣ Apply chart logic (filters, calculated, rules)
+            # ---------------------------------
+            processed_rows = transform_rows(
+                raw_rows,
+                calculated_fields=chart.calculated_fields or [],
+                logic_rules=chart.logic_rules or [],
+                logic_expression=chart.logic_expression,
+                filters=chart.filters or {},
+            )
     
-                merged_filters["equals"] = equals
+            # ---------------------------------
+            # 3️⃣ Aggregate AFTER logic
+            # ---------------------------------
+            cv = ChartViewSet()
+            cv.request = request
+            cv.format_kwarg = None
     
-                dataset.filters = merged_filters
+            aggregated_resp = cv._execute_dataset_with_aggregation(
+                chart,
+                rows_override=processed_rows
+            )
     
-                cv = ChartViewSet()
-                cv.request = request
-                cv.format_kwarg = None
+            rows = (
+                aggregated_resp.data.get("data", [])
+                if aggregated_resp and hasattr(aggregated_resp, "data")
+                else []
+            )
     
-                resp = cv._execute_dataset_with_aggregation(chart)
-                rows = resp.data.get("data", []) if isinstance(resp, Response) else []
+            results.append({
+                "chart_id": chart.id,
+                "title": chart.title,
+                "data": rows,
+            })
     
-                charts_payload.append({
-                    "id": chart.id,
-                    "name": chart.name,
-                    "type": chart.chart_type,
-                    "xField": chart.x_field,
-                    "yField": chart.y_field,
-                    "stackedFields": [],
-                    "filters": chart.filters or {},
-                    "selectedFields": chart.selected_fields,
-                    "data": rows,
-                })
-    
-        return Response({
-            "id": dashboard.id,
-            "name": dashboard.name,
-            "charts": charts_payload,
-        })
+        return Response({"data": results})
         
     # ---------- Delete dashboard ----------
     def destroy(self, request, *args, **kwargs):
