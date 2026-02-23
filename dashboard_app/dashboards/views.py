@@ -1585,32 +1585,8 @@ class DashboardViewSet(viewsets.ModelViewSet):
         for dc in dashboard.dashboard_charts.all().order_by("order"):
             chart = dc.chart
 
-            # ---------- Excel Charts ----------
+            # ---------- Excel ----------
             if chart.excel_data:
-                rows = chart.excel_data.copy()
-
-                # Apply calculated fields
-                for cf in chart.calculated_fields or []:
-                    name, expr = cf.get("name"), cf.get("expr")
-                    for row in rows:
-                        try:
-                            row[name] = eval(expr, {}, row)
-                        except Exception:
-                            row[name] = None
-
-                # Apply logic rules
-                for rule in chart.logic_rules or []:
-                    expr = rule.get("expr")
-                    target_field = rule.get("target_field", "logic_result")
-                    for row in rows:
-                        try:
-                            row[target_field] = eval(expr, {}, row)
-                        except Exception:
-                            row[target_field] = None
-
-                # Apply filters
-                rows = self._apply_filters(rows, chart.filters or {})
-
                 charts_payload.append({
                     "id": chart.id,
                     "name": chart.name,
@@ -1620,79 +1596,53 @@ class DashboardViewSet(viewsets.ModelViewSet):
                     "stackedFields": [],
                     "filters": chart.filters or {},
                     "selectedFields": chart.selected_fields,
-                    "data": rows,
+                    "data": chart.excel_data,
                 })
                 continue
 
-            # ---------- QuickBooks / API Datasets ----------
+            # ---------- QuickBooks / API ----------
+            rows = []
             if chart.dataset:
-                dataset = chart.dataset
-                merged_filters = (dataset.filters or {}).copy()
-
-                # Merge slicers (date range)
-                if slicers.get("from") and slicers.get("to") and slicers.get("date_field"):
-                    merged_filters.update({
-                        "date_field": slicers["date_field"],
-                        "from": slicers["from"],
-                        "to": slicers["to"],
-                    })
-
-                # Equality slicers
-                equals = merged_filters.get("equals", {})
-                for k, v in slicers.items():
-                    if k not in ("from", "to", "date_field"):
-                        equals[k] = v
-                merged_filters["equals"] = equals
-                dataset.filters = merged_filters
-
-                rows = []
                 try:
+                    dataset = chart.dataset
+                    merged_filters = (dataset.filters or {}).copy()
+
+                    # Merge slicers safely
+                    if slicers.get("from") and slicers.get("to") and slicers.get("date_field"):
+                        merged_filters.update({
+                            "date_field": slicers["date_field"],
+                            "from": slicers["from"],
+                            "to": slicers["to"],
+                        })
+
+                    dataset.filters = merged_filters
+
+                    # Execute dataset
+                    from dashboards.views.chart import ChartViewSet
                     cv = ChartViewSet()
                     cv.request = request
                     cv.format_kwarg = None
                     resp = cv._execute_dataset_with_aggregation(chart)
-                    if isinstance(resp, Response):
+
+                    if hasattr(resp, "data"):
                         rows = resp.data.get("data", [])
-                except Exception as e:
-                    print(f"QuickBooks dataset error for chart {chart.id}:", str(e))
+                except Exception:
+                    # Log error but don’t crash
+                    print(f"Dashboard chart {chart.id} failed to load QuickBooks data")
                     traceback.print_exc()
                     rows = []
 
-                # Only apply calculated fields, logic rules, and filters if rows exist
-                if rows:
-                    # Calculated fields
-                    for cf in chart.calculated_fields or []:
-                        name, expr = cf.get("name"), cf.get("expr")
-                        for row in rows:
-                            try:
-                                row[name] = eval(expr, {}, row)
-                            except Exception:
-                                row[name] = None
-
-                    # Logic rules
-                    for rule in chart.logic_rules or []:
-                        expr = rule.get("expr")
-                        target_field = rule.get("target_field", "logic_result")
-                        for row in rows:
-                            try:
-                                row[target_field] = eval(expr, {}, row)
-                            except Exception:
-                                row[target_field] = None
-
-                    # Filters
-                    rows = self._apply_filters(rows, chart.filters or {})
-
-                charts_payload.append({
-                    "id": chart.id,
-                    "name": chart.name,
-                    "type": chart.chart_type,
-                    "xField": chart.x_field,
-                    "yField": chart.y_field,
-                    "stackedFields": [],
-                    "filters": chart.filters or {},
-                    "selectedFields": chart.selected_fields,
-                    "data": rows,
-                })
+            charts_payload.append({
+                "id": chart.id,
+                "name": chart.name,
+                "type": chart.chart_type,
+                "xField": chart.x_field,
+                "yField": chart.y_field,
+                "stackedFields": [],
+                "filters": chart.filters or {},
+                "selectedFields": chart.selected_fields,
+                "data": rows,
+            })
 
         return Response({
             "id": dashboard.id,
