@@ -1582,7 +1582,6 @@ class DashboardViewSet(viewsets.ModelViewSet):
     def run(self, request, pk=None):
         dashboard = self.get_object()
     
-        # 🔹 slicers from frontend
         slicers = request.query_params.dict()
         print(f"[Dashboard {dashboard.id}] Received slicers: {slicers}")
     
@@ -1592,7 +1591,7 @@ class DashboardViewSet(viewsets.ModelViewSet):
             chart = dc.chart
             print(f"[Dashboard {dashboard.id}] Processing chart {chart.id} ({chart.name})")
     
-            # ---------- Excel chart ----------
+            # ---------- Excel ----------
             if chart.excel_data:
                 print(f"[Chart {chart.id}] Using Excel data")
                 charts_payload.append({
@@ -1610,19 +1609,17 @@ class DashboardViewSet(viewsets.ModelViewSet):
     
             # ---------- QuickBooks Dataset ----------
             if chart.dataset:
-                dataset = chart.dataset
-                print(f"[Chart {chart.id}] Fetching QuickBooks dataset {dataset.id}")
-    
                 try:
-                    # 🔹 Fetch raw data safely — do NOT modify dataset.filters
                     cv = ChartViewSet()
                     cv.request = request
                     cv.format_kwarg = None
     
-                    raw_rows = cv._execute_dataset_raw(chart) or []
-                    print(f"[Chart {chart.id}] Fetched {len(raw_rows)} rows from QuickBooks")
+                    # 🔹 Use your working fetch method (same as your “works” code)
+                    resp = cv._execute_dataset_with_aggregation(chart)
+                    rows = resp.data.get("data", []) if hasattr(resp, "data") else []
+                    print(f"[Chart {chart.id}] Fetched {len(rows)} rows from QuickBooks")
     
-                    # 🔹 Build post-fetch filters (slicers + chart filters)
+                    # 🔹 Apply calculated fields, logic rules, and filters safely
                     post_filters = chart.filters.copy() if chart.filters else {}
                     equals = post_filters.get("equals", {})
                     for k, v in slicers.items():
@@ -1631,19 +1628,14 @@ class DashboardViewSet(viewsets.ModelViewSet):
                         equals[k] = v
                     post_filters["equals"] = equals
     
-                    # 🔹 Apply calculated fields, logic rules, and filters safely
                     rows = transform_rows_safe(
-                        raw_rows,
+                        rows,
                         calculated_fields=getattr(chart, "calculated_fields", []),
                         logic_rules=getattr(chart, "logic_rules", []),
                         logic_expression=getattr(chart, "logic_expression", None),
                         filters=post_filters,
                     )
                     print(f"[Chart {chart.id}] {len(rows)} rows after transforms")
-    
-                    # 🔹 Aggregate for chart if needed
-                    rows = cv._aggregate_rows_for_chart(chart, rows)
-                    print(f"[Chart {chart.id}] {len(rows)} rows after aggregation")
     
                 except Exception as e:
                     print(f"[Dashboard {dashboard.id}] Failed to process chart {chart.id}: {e}")
