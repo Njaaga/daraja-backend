@@ -1722,29 +1722,44 @@ class DashboardViewSet(viewsets.ModelViewSet):
         })
         
     # ---------- Helper method for filtering rows ----------
-    def _apply_filters(self, rows, filters):
-        if not filters:
+    def apply_filters(rows, filters):
+        if not filters or not isinstance(filters, dict):
             return rows
-
-        def check_row(row):
-            # Text equality
-            equals = filters.get("equals", {})
-            for k, v in equals.items():
-                if row.get(k) != v:
-                    return False
-
-            # Number / range filters
-            for f in filters.get("range", []):
-                val = row.get(f["field"])
-                if val is None:
-                    return False
-                if f.get("min") is not None and val < f["min"]:
-                    return False
-                if f.get("max") is not None and val > f["max"]:
-                    return False
-            return True
-
-        return [r for r in rows if check_row(r)]
+    
+        out = []
+    
+        for r in rows:
+            keep = True
+    
+            # ----- EQUALS -----
+            for field, expected in filters.get("equals", {}).items():
+                actual = get_value(r, field)
+    
+                # 🚨 If field does not exist → DO NOT FILTER IT OUT
+                if actual is None:
+                    continue
+    
+                if str(actual).strip().lower() != str(expected).strip().lower():
+                    keep = False
+                    break
+    
+            if not keep:
+                continue
+    
+            # ----- CONTAINS -----
+            for field, expected in filters.get("contains", {}).items():
+                actual = get_value(r, field)
+                if actual is None:
+                    continue
+    
+                if str(expected).lower() not in str(actual).lower():
+                    keep = False
+                    break
+    
+            if keep:
+                out.append(r)
+    
+        return out
         
     # ---------- Delete dashboard ----------
     def destroy(self, request, *args, **kwargs):
