@@ -1586,29 +1586,18 @@ class DashboardViewSet(viewsets.ModelViewSet):
     
         for dc in dashboard.dashboard_charts.all().order_by("order"):
             chart = dc.chart
+            rows = []
     
-            # ---------- Excel charts ----------
+            # ---------- Excel ----------
             if chart.excel_data:
-                charts_payload.append({
-                    "id": chart.id,
-                    "name": chart.name,
-                    "type": chart.chart_type,
-                    "xField": chart.x_field,
-                    "yField": chart.y_field,
-                    "stackedFields": [],
-                    "filters": chart.filters or {},
-                    "selectedFields": chart.selected_fields,
-                    "data": chart.excel_data,
-                })
-                continue
+                rows = chart.excel_data
     
-            # ---------- QuickBooks Dataset charts ----------
-            if chart.dataset:
+            # ---------- QuickBooks Dataset ----------
+            elif chart.dataset:
                 dataset = chart.dataset
-    
-                # Merge slicers into dataset filters
                 merged_filters = dataset.filters.copy() if dataset.filters else {}
     
+                # Date range slicer
                 if slicers.get("from") and slicers.get("to") and slicers.get("date_field"):
                     merged_filters.update({
                         "date_field": slicers["date_field"],
@@ -1616,11 +1605,11 @@ class DashboardViewSet(viewsets.ModelViewSet):
                         "to": slicers["to"],
                     })
     
+                # Equality slicers
                 equals = merged_filters.get("equals", {})
                 for k, v in slicers.items():
-                    if k in ("from", "to", "date_field"):
-                        continue
-                    equals[k] = v
+                    if k not in ("from", "to", "date_field"):
+                        equals[k] = v
                 merged_filters["equals"] = equals
                 dataset.filters = merged_filters
     
@@ -1630,36 +1619,43 @@ class DashboardViewSet(viewsets.ModelViewSet):
                     cv.request = request
                     cv.format_kwarg = None
     
-                    # 🔹 Get raw rows from QuickBooks
-                    raw_rows = cv._execute_dataset_raw(chart)
+                    resp = cv._execute_dataset_with_aggregation(chart)
+                    rows = resp.data.get("data", []) if isinstance(resp, Response) else []
     
-                    # 🔹 Apply calculated fields, logic rules, and filters safely
-                    safe_rows = transform_rows_safe(
-                        raw_rows,
+                except Exception as e:
+                    print(f"[Dashboard {dashboard.id}] Dataset execution failed for chart {chart.id}: {e}")
+                    rows = []
+    
+            # ---------- Apply transformations only if any exist ----------
+            if rows and (
+                getattr(chart, "calculated_fields", None) or
+                getattr(chart, "logic_rules", None) or
+                getattr(chart, "logic_expression", None) or
+                chart.filters
+            ):
+                try:
+                    rows = transform_rows_safe(
+                        rows,
                         calculated_fields=getattr(chart, "calculated_fields", []),
                         logic_rules=getattr(chart, "logic_rules", []),
                         logic_expression=getattr(chart, "logic_expression", None),
                         filters=chart.filters,
                     )
-    
-                    # 🔹 Aggregate for chart rendering
-                    rows = cv._aggregate_rows_for_chart(chart, safe_rows)
-    
                 except Exception as e:
-                    print(f"[Dashboard {dashboard.id}] Failed chart {chart.id}: {e}")
+                    print(f"[Dashboard {dashboard.id}] Transform failed for chart {chart.id}: {e}")
                     rows = []
     
-                charts_payload.append({
-                    "id": chart.id,
-                    "name": chart.name,
-                    "type": chart.chart_type,
-                    "xField": chart.x_field,
-                    "yField": chart.y_field,
-                    "stackedFields": [],
-                    "filters": chart.filters or {},
-                    "selectedFields": chart.selected_fields,
-                    "data": rows,
-                })
+            charts_payload.append({
+                "id": chart.id,
+                "name": chart.name,
+                "type": chart.chart_type,
+                "xField": chart.x_field,
+                "yField": chart.y_field,
+                "stackedFields": [],
+                "filters": chart.filters or {},
+                "selectedFields": chart.selected_fields,
+                "data": rows,
+            })
     
         return Response({
             "id": dashboard.id,
