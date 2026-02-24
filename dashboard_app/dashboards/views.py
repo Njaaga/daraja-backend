@@ -1581,13 +1581,29 @@ class DashboardViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["get"])
     def run(self, request, pk=None):
         dashboard = self.get_object()
+    
         slicers = request.query_params.dict()
         charts_payload = []
+    
+        print("====== DASHBOARD RUN START ======")
+        print("Dashboard ID:", dashboard.id)
+        print("Slicers:", slicers)
     
         for dc in dashboard.dashboard_charts.all().order_by("order"):
             chart = dc.chart
     
+            print("\n--- Chart ---")
+            print("Chart ID:", chart.id)
+            print("Chart Name:", chart.name)
+            print("Chart Type:", chart.chart_type)
+            print("xField:", chart.x_field)
+            print("yField:", chart.y_field)
+    
+            # ----------------------------
+            # Excel charts
+            # ----------------------------
             if chart.excel_data:
+                print("Excel chart → returning stored data")
                 charts_payload.append({
                     "id": chart.id,
                     "name": chart.name,
@@ -1601,12 +1617,18 @@ class DashboardViewSet(viewsets.ModelViewSet):
                 })
                 continue
     
+            # ----------------------------
+            # QuickBooks charts
+            # ----------------------------
             if not chart.dataset:
+                print("❌ No dataset attached")
                 continue
     
             dataset = chart.dataset
     
+            # Merge slicers
             merged_filters = dataset.filters.copy() if dataset.filters else {}
+    
             if slicers.get("from") and slicers.get("to") and slicers.get("date_field"):
                 merged_filters.update({
                     "date_field": slicers["date_field"],
@@ -1619,38 +1641,64 @@ class DashboardViewSet(viewsets.ModelViewSet):
                 if k not in ("from", "to", "date_field"):
                     equals[k] = v
             merged_filters["equals"] = equals
+    
             dataset.filters = merged_filters
+    
+            print("Merged dataset filters:", merged_filters)
     
             try:
                 cv = ChartViewSet()
                 cv.request = request
                 cv.format_kwarg = None
     
-                # 1️⃣ RAW QuickBooks rows
+                # ============================
+                # 1️⃣ RAW DATA
+                # ============================
                 raw_rows = cv._execute_dataset_raw(chart)
     
-                # 2️⃣ SAFE raw transforms (NO LOGIC YET)
-                processed_rows = transform_rows_safe(
+                print("RAW ROW COUNT:", len(raw_rows))
+                if raw_rows:
+                    print("RAW SAMPLE ROW:", raw_rows[0])
+    
+                # ============================
+                # 2️⃣ TRANSFORM (NO LOGIC)
+                # ============================
+                transformed_rows = transform_rows_safe(
                     raw_rows,
                     calculated_fields=chart.calculated_fields or [],
-                    logic_rules=None,
+                    logic_rules=None,          # IMPORTANT
                     logic_expression=None,
-                    filters=chart.filters,
+                    filters=None               # IMPORTANT
                 )
     
-                # 3️⃣ Aggregate
-                rows = cv._aggregate_rows_for_chart(chart, processed_rows)
+                print("AFTER TRANSFORM COUNT:", len(transformed_rows))
+                if transformed_rows:
+                    print("TRANSFORM SAMPLE ROW:", transformed_rows[0])
     
-                # 4️⃣ APPLY LOGIC ON AGGREGATED ROWS ONLY
-                rows = apply_logic_rules(
-                    rows,
+                # ============================
+                # 3️⃣ AGGREGATE
+                # ============================
+                aggregated_rows = cv._aggregate_rows_for_chart(chart, transformed_rows)
+    
+                print("AFTER AGGREGATION COUNT:", len(aggregated_rows))
+                if aggregated_rows:
+                    print("AGG SAMPLE ROW:", aggregated_rows[0])
+    
+                # ============================
+                # 4️⃣ LOGIC GATES (POST-AGG)
+                # ============================
+                final_rows = apply_logic_rules(
+                    aggregated_rows,
                     chart.logic_rules or [],
                     chart.logic_expression
                 )
     
+                print("AFTER LOGIC COUNT:", len(final_rows))
+    
             except Exception as e:
-                print(f"[Dashboard {dashboard.id}] Chart {chart.id} failed:", e)
-                rows = []
+                print("❌ ERROR processing chart:", chart.id)
+                print(str(e))
+                final_rows = []
     
             charts_payload.append({
                 "id": chart.id,
@@ -1661,8 +1709,10 @@ class DashboardViewSet(viewsets.ModelViewSet):
                 "stackedFields": [],
                 "filters": chart.filters or {},
                 "selectedFields": chart.selected_fields,
-                "data": rows,
+                "data": final_rows,
             })
+    
+        print("====== DASHBOARD RUN END ======")
     
         return Response({
             "id": dashboard.id,
