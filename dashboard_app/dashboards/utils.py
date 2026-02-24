@@ -1,5 +1,7 @@
+# dashboards/utils.py
 import copy
 import operator
+import re
 
 # -------------------------
 # Safe nested field access
@@ -20,19 +22,24 @@ def get_value(row, field):
 def apply_filters(rows, filters):
     if not filters:
         return rows
+
     out = []
     for r in rows:
         ok = True
+
         for field, expected in filters.get("equals", {}).items():
             if str(get_value(r, field)) != str(expected):
                 ok = False
                 break
+
         if not ok:
             continue
+
         for field, expected in filters.get("contains", {}).items():
             if expected.lower() not in str(get_value(r, field) or "").lower():
                 ok = False
                 break
+
         if ok:
             out.append(r)
     return out
@@ -43,6 +50,7 @@ def apply_filters(rows, filters):
 def apply_calculated_fields(rows, calculated_fields):
     if not calculated_fields:
         return rows
+
     out = []
     for r in rows:
         row = copy.deepcopy(r)
@@ -52,6 +60,7 @@ def apply_calculated_fields(rows, calculated_fields):
             if not name or not expr:
                 continue
             try:
+                # expose only numeric fields
                 safe_vars = {k: float(v) for k, v in row.items() if isinstance(v, (int, float))}
                 row[name] = eval(expr, {"__builtins__": {}}, safe_vars)
             except Exception:
@@ -60,7 +69,7 @@ def apply_calculated_fields(rows, calculated_fields):
     return out
 
 # -------------------------
-# Logic rules & expression
+# Logic rules / expression
 # -------------------------
 OPS = {
     "==": operator.eq,
@@ -71,16 +80,43 @@ OPS = {
     "<=": operator.le,
 }
 
-def apply_logic_rules(rows, logic_rules, logic_expression=None):
+def parse_user_logic_expression(expr: str):
+    """
+    Convert user-friendly logic expression (single =) to Python
+    Example: AccountSubType=LegalProfessionalFees -> AccountSubType == "LegalProfessionalFees"
+    Supports multiple conditions: Amount>0 AND AccountSubType=LegalProfessionalFees
+    """
+    if not expr:
+        return None
+
+    # Replace = with == but ignore >=, <=, !=
+    expr = re.sub(r'(?<![<>=!])=(?!=)', '==', expr)
+
+    # Add quotes around string literals if missing
+    parts = re.split(r'(\s+and\s+|\s+or\s+)', expr, flags=re.IGNORECASE)
+    for i, part in enumerate(parts):
+        # Skip AND/OR
+        if part.strip().lower() in ("and", "or"):
+            continue
+        m = re.match(r'(\w+)\s*(==|!=|>|>=|<|<=)\s*(.+)', part.strip())
+        if m:
+            field, op, val = m.groups()
+            # Quote if val is not numeric and not already quoted
+            if not re.match(r'^-?\d+(\.\d+)?$', val) and not (val.startswith('"') and val.endswith('"')):
+                val = f'"{val}"'
+            parts[i] = f'{field}{op}{val}'
+    return "".join(parts)
+
+def apply_logic_rules(rows, logic_rules=None, logic_expression=None):
     if not logic_rules and not logic_expression:
         return rows
 
     out = []
+    expr = parse_user_logic_expression(logic_expression) if logic_expression else None
 
     for r in rows:
-        keep = True
-
-        # Apply explicit logic rules
+        # Evaluate each logic_rule individually
+        results = []
         if logic_rules:
             for rule in logic_rules:
                 try:
@@ -88,39 +124,42 @@ def apply_logic_rules(rows, logic_rules, logic_expression=None):
                     op = OPS.get(rule.get("operator"))
                     target = rule.get("value")
                     value = get_value(r, field)
-                    if op:
-                        keep = op(value, target)
-                    else:
-                        keep = False
+                    results.append(op(value, target) if op else False)
                 except Exception:
-                    keep = False
-                if not keep:
-                    break
+                    results.append(False)
 
-        # Apply logic_expression safely
-        if keep and logic_expression:
+        # Evaluate logic_expression
+        keep = True
+        if expr:
+            # Replace field names with their values in the row
+            safe_expr = expr
+            for key in r:
+                val = r[key]
+                # Quote strings
+                if isinstance(val, str):
+                    val = f'"{val}"'
+                safe_expr = re.sub(rf'\b{key}\b', str(val), safe_expr)
             try:
-                # Only allow field names in locals
-                safe_locals = {}
-                for key, val in r.items():
-                    # Convert everything to Python-friendly types
-                    if isinstance(val, str):
-                        safe_locals[key] = val
-                    else:
-                        safe_locals[key] = val
-                keep = eval(logic_expression, {"__builtins__": {}}, safe_locals)
+                keep = eval(safe_expr, {"__builtins__": {}})
             except Exception:
                 keep = False
+        elif results:
+            keep = all(results)
 
         if keep:
             out.append(r)
-
     return out
 
 # -------------------------
 # MAIN ENTRY
 # -------------------------
-def transform_rows_safe(rows, calculated_fields=None, logic_rules=None, logic_expression=None, filters=None):
+def transform_rows_safe(
+    rows,
+    calculated_fields=None,
+    logic_rules=None,
+    logic_expression=None,
+    filters=None,
+):
     if not rows:
         return []
 
