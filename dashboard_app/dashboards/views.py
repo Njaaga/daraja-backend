@@ -1581,18 +1581,18 @@ class DashboardViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["get"])
     def run(self, request, pk=None):
         dashboard = self.get_object()
-        slicers = request.query_params.dict()
-        charts_payload = []
 
-        print(f"[Dashboard {dashboard.id}] Running with slicers: {slicers}")
+        # 🔹 slicers from frontend query params
+        slicers = request.query_params.dict()
+        print(f"[Dashboard {dashboard.id}] Slicers received: {slicers}")
+
+        charts_payload = []
 
         for dc in dashboard.dashboard_charts.all().order_by("order"):
             chart = dc.chart
-            print(f"[Dashboard {dashboard.id}] Processing chart {chart.id} ({chart.name})")
 
-            # ---------- Excel ----------
+            # ---------- Excel Charts ----------
             if chart.excel_data:
-                print(f"[Chart {chart.id}] Using Excel data ({len(chart.excel_data)} rows)")
                 charts_payload.append({
                     "id": chart.id,
                     "name": chart.name,
@@ -1610,7 +1610,7 @@ class DashboardViewSet(viewsets.ModelViewSet):
             if chart.dataset:
                 dataset = chart.dataset
 
-                # 🔹 Merge dashboard slicers into dataset filters
+                # 🔥 Merge dashboard slicers into dataset filters
                 merged_filters = dataset.filters.copy() if dataset.filters else {}
                 if slicers.get("from") and slicers.get("to") and slicers.get("date_field"):
                     merged_filters.update({
@@ -1618,7 +1618,6 @@ class DashboardViewSet(viewsets.ModelViewSet):
                         "from": slicers["from"],
                         "to": slicers["to"],
                     })
-
                 equals = merged_filters.get("equals", {})
                 for k, v in slicers.items():
                     if k not in ("from", "to", "date_field"):
@@ -1626,29 +1625,48 @@ class DashboardViewSet(viewsets.ModelViewSet):
                 merged_filters["equals"] = equals
                 dataset.filters = merged_filters
 
-                print(f"[Chart {chart.id}] Merged filters: {merged_filters}")
+                # 🔹 Decode JSON fields safely
+                def decode_json_field(attr, default):
+                    val = getattr(chart, attr, default)
+                    if isinstance(val, str):
+                        try:
+                            val = json.loads(val)
+                        except Exception:
+                            val = default
+                    return val
 
+                calculated_fields = decode_json_field("calculated_fields", [])
+                logic_rules = decode_json_field("logic_rules", [])
+                logic_expression = getattr(chart, "logic_expression", None)
+                filters = decode_json_field("filters", {})
+
+                print(f"[Chart {chart.id}] Calculated Fields: {calculated_fields}")
+                print(f"[Chart {chart.id}] Logic Rules: {logic_rules}")
+                print(f"[Chart {chart.id}] Logic Expression: {logic_expression}")
+                print(f"[Chart {chart.id}] Filters before transform: {filters}")
+
+                # 🔹 Execute dataset
                 try:
-                    # 🔹 Fetch raw QB rows
                     cv = ChartViewSet()
                     cv.request = request
                     cv.format_kwarg = None
 
-                    resp = cv._execute_dataset_with_aggregation(chart)
-                    raw_rows = resp.data.get("data", []) if isinstance(resp, Response) else []
+                    raw_rows = cv._execute_dataset_raw(chart)
+                    print(f"[Chart {chart.id}] Raw rows fetched: {len(raw_rows)}")
 
-                    print(f"[Chart {chart.id}] QB fetched {len(raw_rows)} rows")
-
-                    # 🔹 Apply calculated fields, logic rules, and logic_expression
-                    rows = transform_rows_safe(
+                    # 🔹 Apply calculated fields, logic rules, filters
+                    transformed_rows = transform_rows_safe(
                         raw_rows,
-                        calculated_fields=getattr(chart, "calculated_fields", []),
-                        logic_rules=getattr(chart, "logic_rules", []),
-                        logic_expression=chart.logic_expression,
-                        filters=getattr(chart, "filters", None),
+                        calculated_fields=calculated_fields,
+                        logic_rules=logic_rules,
+                        logic_expression=logic_expression,
+                        filters=filters,
                     )
+                    print(f"[Chart {chart.id}] Rows after transform: {len(transformed_rows)}")
 
-                    print(f"[Chart {chart.id}] Rows after transform_rows_safe: {len(rows)}")
+                    # 🔹 Aggregate rows for chart
+                    rows = cv._aggregate_rows_for_chart(chart, transformed_rows)
+                    print(f"[Chart {chart.id}] Rows after aggregation: {len(rows)}")
 
                 except Exception as e:
                     print(f"[Dashboard {dashboard.id}] Failed to process chart {chart.id}: {e}")
@@ -1661,12 +1679,11 @@ class DashboardViewSet(viewsets.ModelViewSet):
                     "xField": chart.x_field,
                     "yField": chart.y_field,
                     "stackedFields": [],
-                    "filters": chart.filters or {},
+                    "filters": filters,
                     "selectedFields": chart.selected_fields,
                     "data": rows,
                 })
 
-        print(f"[Dashboard {dashboard.id}] Returning payload with {len(charts_payload)} charts")
         return Response({
             "id": dashboard.id,
             "name": dashboard.name,
