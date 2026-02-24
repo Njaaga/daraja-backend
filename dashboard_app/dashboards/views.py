@@ -1587,7 +1587,6 @@ class DashboardViewSet(viewsets.ModelViewSet):
         for dc in dashboard.dashboard_charts.all().order_by("order"):
             chart = dc.chart
     
-            # ---------- Excel charts ----------
             if chart.excel_data:
                 charts_payload.append({
                     "id": chart.id,
@@ -1602,25 +1601,21 @@ class DashboardViewSet(viewsets.ModelViewSet):
                 })
                 continue
     
-            # ---------- QuickBooks Dataset ----------
             if chart.dataset:
                 dataset = chart.dataset
     
-                # Merge slicers into dataset filters
+                # Merge slicers
                 merged_filters = dataset.filters.copy() if dataset.filters else {}
-    
                 if slicers.get("from") and slicers.get("to") and slicers.get("date_field"):
                     merged_filters.update({
                         "date_field": slicers["date_field"],
                         "from": slicers["from"],
                         "to": slicers["to"],
                     })
-    
                 equals = merged_filters.get("equals", {})
                 for k, v in slicers.items():
-                    if k in ("from", "to", "date_field"):
-                        continue
-                    equals[k] = v
+                    if k not in ("from", "to", "date_field"):
+                        equals[k] = v
                 merged_filters["equals"] = equals
                 dataset.filters = merged_filters
     
@@ -1629,36 +1624,11 @@ class DashboardViewSet(viewsets.ModelViewSet):
                     cv.request = request
                     cv.format_kwarg = None
     
-                    # --------------------
-                    # 1️⃣ Fetch raw rows from QB / dataset
-                    # --------------------
-                    raw_rows = cv._execute_dataset_raw(chart)
+                    # Use working fetch method
+                    resp = cv._execute_dataset_with_aggregation(chart)
+                    rows = resp.data.get("data", []) if isinstance(resp, Response) else []
     
-                    # Debug: check raw rows
-                    print(f"[DEBUG] Chart {chart.id} raw rows: {raw_rows[:3]}")  # first 3 rows
-    
-                    # --------------------
-                    # 2️⃣ Apply calculated fields, logic rules, filters
-                    # --------------------
-                    rows = transform_rows_safe(
-                        raw_rows,
-                        calculated_fields=getattr(chart, "calculated_fields", []),
-                        logic_rules=getattr(chart, "logic_rules", []),
-                        logic_expression=getattr(chart, "logic_expression", None),
-                        filters=chart.filters,
-                    )
-    
-                    # Debug: check transformed rows
-                    print(f"[DEBUG] Chart {chart.id} transformed rows: {rows[:3]}")
-    
-                    # --------------------
-                    # 3️⃣ Aggregate rows for chart
-                    # --------------------
-                    rows = cv._aggregate_rows_for_chart(chart, rows)
-    
-                    # --------------------
-                    # 4️⃣ Optional: Apply transform again if aggregation may alter fields
-                    # --------------------
+                    # Apply calculated fields, logic, filters
                     rows = transform_rows_safe(
                         rows,
                         calculated_fields=getattr(chart, "calculated_fields", []),
