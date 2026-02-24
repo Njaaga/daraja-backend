@@ -1582,16 +1582,17 @@ class DashboardViewSet(viewsets.ModelViewSet):
     def run(self, request, pk=None):
         dashboard = self.get_object()
         slicers = request.query_params.dict()
-    
         charts_payload = []
-    
+
+        print(f"[Dashboard {dashboard.id}] Running with slicers: {slicers}")
+
         for dc in dashboard.dashboard_charts.all().order_by("order"):
             chart = dc.chart
-            print(f"\n[Dashboard {dashboard.id}] Processing chart {chart.id} ({chart.name})")
-    
-            # ---------- Excel Data ----------
+            print(f"[Dashboard {dashboard.id}] Processing chart {chart.id} ({chart.name})")
+
+            # ---------- Excel ----------
             if chart.excel_data:
-                print(f"[Chart {chart.id}] Using Excel data, rows={len(chart.excel_data)}")
+                print(f"[Chart {chart.id}] Using Excel data ({len(chart.excel_data)} rows)")
                 charts_payload.append({
                     "id": chart.id,
                     "name": chart.name,
@@ -1604,62 +1605,55 @@ class DashboardViewSet(viewsets.ModelViewSet):
                     "data": chart.excel_data,
                 })
                 continue
-    
+
             # ---------- QuickBooks Dataset ----------
             if chart.dataset:
                 dataset = chart.dataset
-                print(f"[Chart {chart.id}] Using QuickBooks dataset {dataset.id}")
-    
-                # Merge dashboard slicers into dataset filters
+
+                # 🔹 Merge dashboard slicers into dataset filters
                 merged_filters = dataset.filters.copy() if dataset.filters else {}
-    
                 if slicers.get("from") and slicers.get("to") and slicers.get("date_field"):
                     merged_filters.update({
                         "date_field": slicers["date_field"],
                         "from": slicers["from"],
                         "to": slicers["to"],
                     })
-    
+
                 equals = merged_filters.get("equals", {})
                 for k, v in slicers.items():
-                    if k in ("from", "to", "date_field"):
-                        continue
-                    equals[k] = v
+                    if k not in ("from", "to", "date_field"):
+                        equals[k] = v
                 merged_filters["equals"] = equals
                 dataset.filters = merged_filters
-    
-                print(f"[Chart {chart.id}] Filters applied: {dataset.filters}")
-    
+
+                print(f"[Chart {chart.id}] Merged filters: {merged_filters}")
+
                 try:
-                    # ------------------------------
-                    # Fetch raw rows from QuickBooks
-                    # ------------------------------
+                    # 🔹 Fetch raw QB rows
                     cv = ChartViewSet()
                     cv.request = request
                     cv.format_kwarg = None
-    
+
                     resp = cv._execute_dataset_with_aggregation(chart)
-                    rows = resp.data.get("data", []) if isinstance(resp, Response) else []
-    
-                    print(f"[Chart {chart.id}] QB fetched {len(rows)} rows")
-    
-                    # ------------------------------
-                    # Apply calculated fields, logic, and filters
-                    # ------------------------------
+                    raw_rows = resp.data.get("data", []) if isinstance(resp, Response) else []
+
+                    print(f"[Chart {chart.id}] QB fetched {len(raw_rows)} rows")
+
+                    # 🔹 Apply calculated fields, logic rules, and logic_expression
                     rows = transform_rows_safe(
-                        rows,
+                        raw_rows,
                         calculated_fields=getattr(chart, "calculated_fields", []),
                         logic_rules=getattr(chart, "logic_rules", []),
                         logic_expression=getattr(chart, "logic_expression", None),
-                        filters=chart.filters,
+                        filters=getattr(chart, "filters", None),
                     )
-    
+
                     print(f"[Chart {chart.id}] Rows after transform_rows_safe: {len(rows)}")
-    
+
                 except Exception as e:
                     print(f"[Dashboard {dashboard.id}] Failed to process chart {chart.id}: {e}")
                     rows = []
-    
+
                 charts_payload.append({
                     "id": chart.id,
                     "name": chart.name,
@@ -1671,8 +1665,8 @@ class DashboardViewSet(viewsets.ModelViewSet):
                     "selectedFields": chart.selected_fields,
                     "data": rows,
                 })
-    
-        print(f"[Dashboard {dashboard.id}] Finished processing. Total charts: {len(charts_payload)}")
+
+        print(f"[Dashboard {dashboard.id}] Returning payload with {len(charts_payload)} charts")
         return Response({
             "id": dashboard.id,
             "name": dashboard.name,
