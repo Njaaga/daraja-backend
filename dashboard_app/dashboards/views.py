@@ -1582,13 +1582,11 @@ class DashboardViewSet(viewsets.ModelViewSet):
     def run(self, request, pk=None):
         dashboard = self.get_object()
         slicers = request.query_params.dict()
-    
         charts_payload = []
     
         for dc in dashboard.dashboard_charts.all().order_by("order"):
             chart = dc.chart
     
-            # ---------- Excel charts ----------
             if chart.excel_data:
                 charts_payload.append({
                     "id": chart.id,
@@ -1603,7 +1601,6 @@ class DashboardViewSet(viewsets.ModelViewSet):
                 })
                 continue
     
-            # ---------- QuickBooks Dataset ----------
             if chart.dataset:
                 dataset = chart.dataset
     
@@ -1615,7 +1612,6 @@ class DashboardViewSet(viewsets.ModelViewSet):
                         "from": slicers["from"],
                         "to": slicers["to"],
                     })
-    
                 equals = merged_filters.get("equals", {})
                 for k, v in slicers.items():
                     if k not in ("from", "to", "date_field"):
@@ -1624,27 +1620,25 @@ class DashboardViewSet(viewsets.ModelViewSet):
                 dataset.filters = merged_filters
     
                 try:
-                    # Execute dataset
                     cv = ChartViewSet()
                     cv.request = request
                     cv.format_kwarg = None
     
-                    raw_rows = cv._execute_dataset_raw(chart)
+                    # ✅ Use the version that actually works
+                    resp = cv._execute_dataset_with_aggregation(chart)
+                    rows = resp.data.get("data", []) if isinstance(resp, Response) else []
     
-                    # Safely apply calculated fields, logic, and filters
-                    rows = transform_rows_safe(
-                        raw_rows,
-                        calculated_fields=getattr(chart, "calculated_fields", []),
-                        logic_rules=getattr(chart, "logic_rules", []),
-                        logic_expression=getattr(chart, "logic_expression", None),
-                        filters=chart.filters,
-                    )
-    
-                    # Aggregate rows for chart
-                    rows = cv._aggregate_rows_for_chart(chart, rows)
+                    # Only apply transform_rows_safe if rows exist
+                    if rows:
+                        rows = transform_rows_safe(
+                            rows,
+                            calculated_fields=getattr(chart, "calculated_fields", []),
+                            logic_rules=getattr(chart, "logic_rules", []),
+                            logic_expression=getattr(chart, "logic_expression", None),
+                            filters=chart.filters,
+                        )
     
                 except Exception as e:
-                    # If anything fails, just return empty rows instead of breaking dashboard
                     print(f"[Dashboard {dashboard.id}] Chart {chart.id} failed: {e}")
                     rows = []
     
