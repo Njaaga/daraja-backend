@@ -1632,7 +1632,7 @@ class DashboardViewSet(viewsets.ModelViewSet):
                     if rows:
                         rows = transform_rows_safe(
                             rows,
-                            calculated_fields=getattr(chart, "calculated_fields", []),
+                           # calculated_fields=getattr(chart, "calculated_fields", []),
                             logic_rules=getattr(chart, "logic_rules", []),
                             logic_expression=getattr(chart, "logic_expression", None),
                             filters=chart.filters,
