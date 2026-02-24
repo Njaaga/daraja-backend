@@ -1656,49 +1656,43 @@ class DashboardViewSet(viewsets.ModelViewSet):
                     cv.request = request
                     cv.format_kwarg = None
     
+                    # STEP 1: normal execution (your WORKING path)
                     resp = cv._execute_dataset_with_aggregation(chart)
                     rows = resp.data.get("data", []) if isinstance(resp, Response) else []
     
+                    # STEP 2: apply filters ONLY if they exist
+                    if rows and chart.filters:
+                        # get RAW rows safely
+                        raw_rows = cv._execute_dataset_raw(chart)
+    
+                        for f in chart.filters:
+                            field = f.get("field")
+                            value = f.get("value")
+                            operator = f.get("operator")
+    
+                            if not field or value in ("", None):
+                                continue
+    
+                            if operator == "equals":
+                                raw_rows = [
+                                    r for r in raw_rows
+                                    if str(resolve_field(r, field)).lower()
+                                    == str(value).lower()
+                                ]
+    
+                        # STEP 3: re-aggregate after filtering
+                        rows = cv._aggregate_rows_for_chart(chart, raw_rows)
+    
+                    # STEP 4: logic gates (SAFE – post aggregation)
+                    if rows and chart.logic_expression:
+                        rows = transform_rows_safe(
+                            rows,
+                            logic_expression=chart.logic_expression,
+                        )
+    
                 except Exception as e:
-                    print(f"[Dashboard {dashboard.id}] Dataset failed chart {chart.id}: {e}")
+                    print(f"[Dashboard {dashboard.id}] Chart {chart.id} failed:", e)
                     rows = []
-    
-            # ---------- APPLY FILTERS (YOUR DB FORMAT) ----------
-            if rows and chart.filters:
-                for f in chart.filters:
-                    field = f.get("field")
-                    value = f.get("value")
-                    operator = f.get("operator")
-            
-                    if not field or value in (None, ""):
-                        continue
-            
-                    if operator == "equals":
-                        rows = [
-                            r for r in rows
-                            if str(resolve_field(r, field)).lower() == str(value).lower()
-                        ]
-            
-                    elif operator == "contains":
-                        rows = [
-                            r for r in rows
-                            if value.lower() in str(resolve_field(r, field) or "").lower()
-                        ]
-    
-            # ---------- APPLY LOGIC EXPRESSION ----------
-            if rows and chart.logic_expression:
-                try:
-                    # Example: AccountSubType="LegalProfessionalFees"
-                    field, val = chart.logic_expression.split("=")
-                    field = field.strip()
-                    val = val.strip().strip('"').strip("'")
-    
-                    rows = [
-                        r for r in rows
-                        if str(r.get(field)) == val
-                    ]
-                except Exception as e:
-                    print(f"[Dashboard {dashboard.id}] Logic failed chart {chart.id}: {e}")
     
             charts_payload.append({
                 "id": chart.id,
