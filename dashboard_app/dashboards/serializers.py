@@ -279,6 +279,7 @@ class ChartSerializer(serializers.ModelSerializer):
     filters = serializers.JSONField(required=False, allow_null=True)
     logic_rules = serializers.JSONField(required=False, allow_null=True)
     logic_expression = serializers.CharField(required=False, allow_null=True)
+    calculated_fields = serializers.JSONField(required=False, allow_null=True)
 
     dataset = serializers.PrimaryKeyRelatedField(
         queryset=Dataset.objects.all(),
@@ -303,6 +304,7 @@ class ChartSerializer(serializers.ModelSerializer):
             "logic_rules",
             "logic_expression",
             "selected_fields",
+            "calculated_fields",
             "created_by",
             "created_at",
         ]
