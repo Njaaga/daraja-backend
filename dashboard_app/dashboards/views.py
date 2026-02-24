@@ -1581,24 +1581,17 @@ class DashboardViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["get"])
     def run(self, request, pk=None):
         dashboard = self.get_object()
+    
+        # 🔹 slicers from frontend
         slicers = request.query_params.dict()
+    
         charts_payload = []
     
         for dc in dashboard.dashboard_charts.all().order_by("order"):
             chart = dc.chart
     
-            # -------------------------
-            # EXCEL
-            # -------------------------
+            # ---------- Excel ----------
             if chart.excel_data:
-                rows = transform_rows_safe(
-                    chart.excel_data,
-                    calculated_fields=chart.calculated_fields,
-                    logic_rules=chart.logic_rules,
-                    logic_expression=chart.logic_expression,
-                    filters=chart.filters,
-                )
-    
                 charts_payload.append({
                     "id": chart.id,
                     "name": chart.name,
@@ -1608,23 +1601,18 @@ class DashboardViewSet(viewsets.ModelViewSet):
                     "stackedFields": [],
                     "filters": chart.filters or {},
                     "selectedFields": chart.selected_fields,
-                    "data": rows,
+                    "data": chart.excel_data,
                 })
                 continue
     
-            # -------------------------
-            # QUICKBOOKS DATASET
-            # -------------------------
+            # ---------- QuickBooks Dataset ----------
             if chart.dataset:
                 dataset = chart.dataset
     
-                # 🔒 Preserve original filters
-                original_filters = dataset.filters
+                # 🔥 merge dashboard slicers into dataset filters
+                merged_filters = dataset.filters.copy() if dataset.filters else {}
     
-                # Build merged filters WITHOUT mutating DB state
-                merged_filters = original_filters.copy() if original_filters else {}
-    
-                # Date slicer
+                # Date range slicer
                 if slicers.get("from") and slicers.get("to") and slicers.get("date_field"):
                     merged_filters.update({
                         "date_field": slicers["date_field"],
@@ -1632,7 +1620,7 @@ class DashboardViewSet(viewsets.ModelViewSet):
                         "to": slicers["to"],
                     })
     
-                # Equality slicers
+                # Equality slicers (CustomerRef.name=ABC)
                 equals = merged_filters.get("equals", {})
                 for k, v in slicers.items():
                     if k in ("from", "to", "date_field"):
@@ -1640,33 +1628,38 @@ class DashboardViewSet(viewsets.ModelViewSet):
                     equals[k] = v
                 merged_filters["equals"] = equals
     
-                try:
-                    # Temporarily inject merged filters
-                    dataset.filters = merged_filters
+                dataset.filters = merged_filters
     
+                # 🔹 Execute dataset safely
+                try:
                     cv = ChartViewSet()
                     cv.request = request
                     cv.format_kwarg = None
     
-                    resp = cv._execute_dataset_with_aggregation(chart)
-                    rows = resp.data.get("data", []) if hasattr(resp, "data") else []
+                    raw_rows = cv._execute_dataset_raw(chart)
+
+                    rows = transform_rows_safe(
+                        raw_rows,
+                        calculated_fields=getattr(chart, "calculated_fields", []),
+                        logic_rules=getattr(chart, "logic_rules", []),
+                        logic_expression=getattr(chart, "logic_expression", None),
+                        filters=chart.filters,
+                    )
+
+                    rows = cv._aggregate_rows_for_chart(chart, rows)
     
+                    # 🔹 Apply calculated fields, logic rules, and filters safely
+                    rows = transform_rows_safe(
+                        rows,
+                        calculated_fields=getattr(chart, "calculated_fields", []),
+                        logic_rules=getattr(chart, "logic_rules", []),
+                        logic_expression=getattr(chart, "logic_expression", None),
+                        filters=chart.filters,
+                    )
                 except Exception as e:
-                    print(f"[Dashboard {dashboard.id}] QB error chart {chart.id}: {e}")
+                    # Log error for debugging
+                    print(f"[Dashboard {dashboard.id}] Failed to process chart {chart.id}: {e}")
                     rows = []
-    
-                finally:
-                    # 🔒 ALWAYS restore original filters
-                    dataset.filters = original_filters
-    
-                # 🧠 Apply logic AFTER QB returns rows
-                rows = transform_rows_safe(
-                    rows,
-                    calculated_fields=chart.calculated_fields,
-                    logic_rules=chart.logic_rules,
-                    logic_expression=chart.logic_expression,
-                    filters=chart.filters,
-                )
     
                 charts_payload.append({
                     "id": chart.id,
