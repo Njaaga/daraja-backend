@@ -1611,58 +1611,76 @@ class DashboardViewSet(viewsets.ModelViewSet):
         dashboard = self.get_object()
         slicers = request.query_params.dict()
         charts_payload = []
-
+    
         for dc in dashboard.dashboard_charts.all().order_by("order"):
             chart = dc.chart
             rows = []
-
-            # ---------- Excel data ----------
+    
+            # ---------- Excel ----------
             if chart.excel_data:
                 rows = chart.excel_data
-
-            # ---------- QuickBooks dataset ----------
+    
+            # ---------- QuickBooks Dataset ----------
             elif chart.dataset:
                 dataset = chart.dataset
                 merged_filters = dataset.filters.copy() if dataset.filters else {}
-
-                # 🔹 Merge frontend slicers (date range + equality)
+    
+                # 🔹 Merge slicers
                 if slicers.get("from") and slicers.get("to") and slicers.get("date_field"):
                     merged_filters.update({
                         "date_field": slicers["date_field"],
                         "from": slicers["from"],
                         "to": slicers["to"],
                     })
-
+    
+                # Equality slicers
                 equals = merged_filters.get("equals", {})
                 for k, v in slicers.items():
                     if k not in ("from", "to", "date_field"):
                         equals[k] = v
                 merged_filters["equals"] = equals
-
-                # Do NOT assign chart.filters to dataset.filters here! QB expects original filter format
-                # dataset.filters = merged_filters  # <-- DANGEROUS, breaks QB fetch
-
-                # 🔹 Fetch raw QB data
+                dataset.filters = merged_filters
+    
+                # 🔹 Execute dataset
                 try:
                     cv = ChartViewSet()
                     cv.request = request
                     cv.format_kwarg = None
-
+    
                     resp = cv._execute_dataset_with_aggregation(chart)
                     rows = resp.data.get("data", []) if isinstance(resp, Response) else []
-
+    
                 except Exception as e:
                     print(f"[Dashboard {dashboard.id}] Dataset execution failed for chart {chart.id}: {e}")
                     rows = []
-
-            # ---------- Apply transformations (post-processing) ----------
-            if rows:
+    
+            # ---------- Convert DB filters to transform_rows_safe format ----------
+            safe_filters = {"equals": {}, "contains": {}, "range": {}}
+            if chart.filters:
+                for f in chart.filters:
+                    field = f.get("field")
+                    value = f.get("value")
+                    operator = f.get("operator")
+                    if not field or value in (None, ""):
+                        continue
+    
+                    if operator == "equals":
+                        safe_filters["equals"][field] = value
+                    elif operator == "contains":
+                        safe_filters["contains"][field] = value
+                    elif operator in ("min", "max"):
+                        if field not in safe_filters["range"]:
+                            safe_filters["range"][field] = {}
+                        safe_filters["range"][field][operator] = value
+    
+            # ---------- Apply calculated fields, logic, and filters ----------
+            if rows and (
+                getattr(chart, "calculated_fields", None) or
+                getattr(chart, "logic_rules", None) or
+                getattr(chart, "logic_expression", None) or
+                chart.filters
+            ):
                 try:
-                    # Convert chart.filters list (from DB) into safe dict format for transform_rows_safe
-                    safe_filters = {}
-                    if chart.filters:
-                        safe_filters = {"equals": {f["field"]: f["value"] for f in chart.filters if f.get("field")}}
-
                     rows = transform_rows_safe(
                         rows,
                         calculated_fields=getattr(chart, "calculated_fields", []),
@@ -1673,7 +1691,7 @@ class DashboardViewSet(viewsets.ModelViewSet):
                 except Exception as e:
                     print(f"[Dashboard {dashboard.id}] Transform failed for chart {chart.id}: {e}")
                     rows = []
-
+    
             charts_payload.append({
                 "id": chart.id,
                 "name": chart.name,
@@ -1685,7 +1703,7 @@ class DashboardViewSet(viewsets.ModelViewSet):
                 "selectedFields": chart.selected_fields,
                 "data": rows,
             })
-
+    
         return Response({
             "id": dashboard.id,
             "name": dashboard.name,
