@@ -1723,7 +1723,30 @@ class DashboardViewSet(viewsets.ModelViewSet):
             # ---------- APPLY LOGIC EXPRESSION (SAFE) ----------
             if rows and getattr(chart, "logic_expression", None):
                 rows = apply_logic_expression(rows, chart.logic_expression)
-    
+
+            # Apply calculated fields safely
+            if rows and chart.calculated_fields:
+                try:
+                    import copy
+                    safe_rows = []
+                    for r in rows:
+                        row = copy.deepcopy(r)
+                        for cf in chart.calculated_fields:
+                            name = cf.get("name")
+                            expr = cf.get("expression")
+                            if not name or not expr:
+                                continue
+                            # only allow numeric fields
+                            safe_vars = {k: float(v) for k, v in row.items() if isinstance(v, (int, float))}
+                            try:
+                                row[name] = eval(expr, {"__builtins__": {}}, safe_vars)
+                            except Exception:
+                                row[name] = None
+                        safe_rows.append(row)
+                    rows = safe_rows
+                except Exception as e:
+                    print(f"[Dashboard {dashboard.id}] Calculated fields failed for chart {chart.id}: {e}")
+        
             charts_payload.append({
                 "id": chart.id,
                 "name": chart.name,
