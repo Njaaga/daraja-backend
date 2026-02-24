@@ -230,6 +230,7 @@ class Chart(models.Model):
     filters = models.JSONField(null=True, blank=True)
     logic_rules = models.JSONField(null=True, blank=True)
     logic_expression = models.TextField(null=True, blank=True)
+    calculated_fields = models.JSONField(null=True, blank=True)
     selected_fields = models.JSONField(null=True, blank=True)  # For table charts
     created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
