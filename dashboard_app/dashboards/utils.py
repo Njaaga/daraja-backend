@@ -76,10 +76,11 @@ def apply_logic_rules(rows, logic_rules, logic_expression=None):
         return rows
 
     out = []
+
     for r in rows:
         keep = True
 
-        # Apply explicit logic rules (operator-based)
+        # Apply explicit logic rules
         if logic_rules:
             for rule in logic_rules:
                 try:
@@ -96,23 +97,24 @@ def apply_logic_rules(rows, logic_rules, logic_expression=None):
                 if not keep:
                     break
 
-        # Apply logic_expression if given
+        # Apply logic_expression safely
         if keep and logic_expression:
             try:
-                # Replace field names with values in row safely
-                expr = logic_expression
-                for key in r.keys():
-                    val = r[key]
-                    # Quote string values for safe eval
+                # Only allow field names in locals
+                safe_locals = {}
+                for key, val in r.items():
+                    # Convert everything to Python-friendly types
                     if isinstance(val, str):
-                        val = f'"{val}"'
-                    expr = expr.replace(key, str(val))
-                keep = eval(expr, {"__builtins__": {}})
+                        safe_locals[key] = val
+                    else:
+                        safe_locals[key] = val
+                keep = eval(logic_expression, {"__builtins__": {}}, safe_locals)
             except Exception:
                 keep = False
 
         if keep:
             out.append(r)
+
     return out
 
 # -------------------------
