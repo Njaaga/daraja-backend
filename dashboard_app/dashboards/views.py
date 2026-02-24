@@ -1581,26 +1581,21 @@ class DashboardViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["get"])
     def run(self, request, pk=None):
         dashboard = self.get_object()
-    
         slicers = request.query_params.dict()
-        print(f"[Dashboard {dashboard.id}] Received slicers: {slicers}")
-    
         charts_payload = []
     
         for dc in dashboard.dashboard_charts.all().order_by("order"):
             chart = dc.chart
-            print(f"[Dashboard {dashboard.id}] Processing chart {chart.id} ({chart.name})")
     
-            # ---------- Excel ----------
+            # ---------- Excel charts ----------
             if chart.excel_data:
-                print(f"[Chart {chart.id}] Using Excel data")
                 charts_payload.append({
                     "id": chart.id,
                     "name": chart.name,
                     "type": chart.chart_type,
                     "xField": chart.x_field,
                     "yField": chart.y_field,
-                    "stackedFields": [],
+                    "stackedFields": chart.stacked_fields or [],
                     "filters": chart.filters or {},
                     "selectedFields": chart.selected_fields,
                     "data": chart.excel_data,
@@ -1609,36 +1604,71 @@ class DashboardViewSet(viewsets.ModelViewSet):
     
             # ---------- QuickBooks Dataset ----------
             if chart.dataset:
+                dataset = chart.dataset
+    
+                # Merge slicers into dataset filters
+                merged_filters = dataset.filters.copy() if dataset.filters else {}
+    
+                if slicers.get("from") and slicers.get("to") and slicers.get("date_field"):
+                    merged_filters.update({
+                        "date_field": slicers["date_field"],
+                        "from": slicers["from"],
+                        "to": slicers["to"],
+                    })
+    
+                equals = merged_filters.get("equals", {})
+                for k, v in slicers.items():
+                    if k in ("from", "to", "date_field"):
+                        continue
+                    equals[k] = v
+                merged_filters["equals"] = equals
+                dataset.filters = merged_filters
+    
                 try:
                     cv = ChartViewSet()
                     cv.request = request
                     cv.format_kwarg = None
     
-                    # 🔹 Use your working fetch method (same as your “works” code)
-                    resp = cv._execute_dataset_with_aggregation(chart)
-                    rows = resp.data.get("data", []) if hasattr(resp, "data") else []
-                    print(f"[Chart {chart.id}] Fetched {len(rows)} rows from QuickBooks")
+                    # --------------------
+                    # 1️⃣ Fetch raw rows from QB / dataset
+                    # --------------------
+                    raw_rows = cv._execute_dataset_raw(chart)
     
-                    # 🔹 Apply calculated fields, logic rules, and filters safely
-                    post_filters = chart.filters.copy() if chart.filters else {}
-                    equals = post_filters.get("equals", {})
-                    for k, v in slicers.items():
-                        if k in ("from", "to", "date_field"):
-                            continue
-                        equals[k] = v
-                    post_filters["equals"] = equals
+                    # Debug: check raw rows
+                    print(f"[DEBUG] Chart {chart.id} raw rows: {raw_rows[:3]}")  # first 3 rows
     
+                    # --------------------
+                    # 2️⃣ Apply calculated fields, logic rules, filters
+                    # --------------------
+                    rows = transform_rows_safe(
+                        raw_rows,
+                        calculated_fields=getattr(chart, "calculated_fields", []),
+                        logic_rules=getattr(chart, "logic_rules", []),
+                        logic_expression=getattr(chart, "logic_expression", None),
+                        filters=chart.filters,
+                    )
+    
+                    # Debug: check transformed rows
+                    print(f"[DEBUG] Chart {chart.id} transformed rows: {rows[:3]}")
+    
+                    # --------------------
+                    # 3️⃣ Aggregate rows for chart
+                    # --------------------
+                    rows = cv._aggregate_rows_for_chart(chart, rows)
+    
+                    # --------------------
+                    # 4️⃣ Optional: Apply transform again if aggregation may alter fields
+                    # --------------------
                     rows = transform_rows_safe(
                         rows,
                         calculated_fields=getattr(chart, "calculated_fields", []),
                         logic_rules=getattr(chart, "logic_rules", []),
                         logic_expression=getattr(chart, "logic_expression", None),
-                        filters=post_filters,
+                        filters=chart.filters,
                     )
-                    print(f"[Chart {chart.id}] {len(rows)} rows after transforms")
     
                 except Exception as e:
-                    print(f"[Dashboard {dashboard.id}] Failed to process chart {chart.id}: {e}")
+                    print(f"[ERROR] Dashboard {dashboard.id}, chart {chart.id}: {e}")
                     rows = []
     
                 charts_payload.append({
@@ -1647,13 +1677,12 @@ class DashboardViewSet(viewsets.ModelViewSet):
                     "type": chart.chart_type,
                     "xField": chart.x_field,
                     "yField": chart.y_field,
-                    "stackedFields": [],
+                    "stackedFields": chart.stacked_fields or [],
                     "filters": chart.filters or {},
                     "selectedFields": chart.selected_fields,
                     "data": rows,
                 })
     
-        print(f"[Dashboard {dashboard.id}] Finished processing, returning {len(charts_payload)} charts")
         return Response({
             "id": dashboard.id,
             "name": dashboard.name,
