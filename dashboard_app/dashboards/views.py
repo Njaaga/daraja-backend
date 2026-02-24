@@ -1639,9 +1639,9 @@ class DashboardViewSet(viewsets.ModelViewSet):
                 # ✅ 2. Apply calculated fields + logic + filters ONCE
                 processed_rows = transform_rows_safe(
                     raw_rows,
-                    calculated_fields=chart.calculated_fields or [],
-                    logic_rules=chart.logic_rules or [],
-                    logic_expression=chart.logic_expression,
+                    calculated_fields=chart.calculated_fields,
+                    logic_rules=None,                       # ✅ disable here
+                    logic_expression=None,
                     filters=chart.filters,
                 )
     
