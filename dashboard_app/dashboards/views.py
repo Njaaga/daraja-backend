@@ -1718,7 +1718,32 @@ class DashboardViewSet(viewsets.ModelViewSet):
                         filtered_rows.append(r)
             
                 rows = filtered_rows
-    
+            # ---------- APPLY LOGIC EXPRESSION (SAFE) ----------
+            if rows and getattr(chart, "logic_expression", None):
+                filtered_rows = []
+                expr = chart.logic_expression.strip()
+            
+                for r in rows:
+                    keep = True
+            
+                    # Support simple equality: Field="Value"
+                    try:
+                        if "=" in expr:
+                            field, val = expr.split("=", 1)
+                            field = field.strip()
+                            val = val.strip().strip('"').strip("'")
+            
+                            actual = str(r.get(field, "")).strip()
+                            if actual != val:
+                                keep = False
+                    except Exception as e:
+                        print(f"[Dashboard {dashboard.id}] Logic expression error: {e}")
+                        keep = True  # Fail-safe: keep row if expression fails
+            
+                    if keep:
+                        filtered_rows.append(r)
+            
+                rows = filtered_rows    
             charts_payload.append({
                 "id": chart.id,
                 "name": chart.name,
