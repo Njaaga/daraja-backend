@@ -1605,6 +1605,35 @@ class DashboardViewSet(viewsets.ModelViewSet):
 
         return Response(DashboardChartSerializer(dc).data)
 
+    def resolve_field(row, field):
+        """
+        Safely resolve nested fields like:
+        - AccountType
+        - Account.AccountType
+        - AccountType.value
+        """
+        if not row or not field:
+            return None
+    
+        # Direct hit
+        if field in row:
+            val = row[field]
+            if isinstance(val, dict) and "value" in val:
+                return val["value"]
+            return val
+    
+        # Dot notation
+        current = row
+        for part in field.split("."):
+            if not isinstance(current, dict):
+                return None
+            current = current.get(part)
+    
+        if isinstance(current, dict) and "value" in current:
+            return current["value"]
+    
+        return current
+    
     # 🔥 QB DASHBOARD EXECUTION
     @action(detail=True, methods=["get"])
     def run(self, request, pk=None):
