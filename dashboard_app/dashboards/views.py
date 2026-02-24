@@ -1644,7 +1644,7 @@ class DashboardViewSet(viewsets.ModelViewSet):
                         raw_rows,
                         calculated_fields=getattr(chart, "calculated_fields", []),
                         logic_rules=getattr(chart, "logic_rules", []),
-                        logic_expression=getattr(chart, "logic_expression", None),
+                        logic_expression=chart.logic_expression,
                         filters=getattr(chart, "filters", None),
                     )
 
