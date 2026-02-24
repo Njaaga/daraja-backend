@@ -1620,28 +1620,8 @@ class DashboardViewSet(viewsets.ModelViewSet):
             if chart.excel_data:
                 rows = chart.excel_data
     
-            # ---------- QuickBooks Dataset ----------
+            # ---------- QuickBooks ----------
             elif chart.dataset:
-                dataset = chart.dataset
-                merged_filters = dataset.filters.copy() if dataset.filters else {}
-    
-                # 🔹 Merge slicers
-                if slicers.get("from") and slicers.get("to") and slicers.get("date_field"):
-                    merged_filters.update({
-                        "date_field": slicers["date_field"],
-                        "from": slicers["from"],
-                        "to": slicers["to"],
-                    })
-    
-                # Equality slicers
-                equals = merged_filters.get("equals", {})
-                for k, v in slicers.items():
-                    if k not in ("from", "to", "date_field"):
-                        equals[k] = v
-                merged_filters["equals"] = equals
-                dataset.filters = merged_filters
-    
-                # 🔹 Execute dataset
                 try:
                     cv = ChartViewSet()
                     cv.request = request
@@ -1651,46 +1631,45 @@ class DashboardViewSet(viewsets.ModelViewSet):
                     rows = resp.data.get("data", []) if isinstance(resp, Response) else []
     
                 except Exception as e:
-                    print(f"[Dashboard {dashboard.id}] Dataset execution failed for chart {chart.id}: {e}")
+                    print(f"[Dashboard {dashboard.id}] Dataset failed chart {chart.id}: {e}")
                     rows = []
     
-            # ---------- Convert DB filters to transform_rows_safe format ----------
-            safe_filters = {"equals": {}, "contains": {}, "range": {}}
-            if chart.filters:
+            # ---------- APPLY FILTERS (YOUR DB FORMAT) ----------
+            if rows and chart.filters:
                 for f in chart.filters:
                     field = f.get("field")
                     value = f.get("value")
                     operator = f.get("operator")
+    
                     if not field or value in (None, ""):
                         continue
     
                     if operator == "equals":
-                        safe_filters["equals"][field] = value
-                    elif operator == "contains":
-                        safe_filters["contains"][field] = value
-                    elif operator in ("min", "max"):
-                        if field not in safe_filters["range"]:
-                            safe_filters["range"][field] = {}
-                        safe_filters["range"][field][operator] = value
+                        rows = [
+                            r for r in rows
+                            if str(r.get(field)) == str(value)
+                        ]
     
-            # ---------- Apply calculated fields, logic, and filters ----------
-            if rows and (
-                getattr(chart, "calculated_fields", None) or
-                getattr(chart, "logic_rules", None) or
-                getattr(chart, "logic_expression", None) or
-                chart.filters
-            ):
+                    elif operator == "contains":
+                        rows = [
+                            r for r in rows
+                            if value.lower() in str(r.get(field, "")).lower()
+                        ]
+    
+            # ---------- APPLY LOGIC EXPRESSION ----------
+            if rows and chart.logic_expression:
                 try:
-                    rows = transform_rows_safe(
-                        rows,
-                        calculated_fields=getattr(chart, "calculated_fields", []),
-                        logic_rules=getattr(chart, "logic_rules", []),
-                        logic_expression=getattr(chart, "logic_expression", None),
-                        filters=safe_filters,
-                    )
+                    # Example: AccountSubType="LegalProfessionalFees"
+                    field, val = chart.logic_expression.split("=")
+                    field = field.strip()
+                    val = val.strip().strip('"').strip("'")
+    
+                    rows = [
+                        r for r in rows
+                        if str(r.get(field)) == val
+                    ]
                 except Exception as e:
-                    print(f"[Dashboard {dashboard.id}] Transform failed for chart {chart.id}: {e}")
-                    rows = []
+                    print(f"[Dashboard {dashboard.id}] Logic failed chart {chart.id}: {e}")
     
             charts_payload.append({
                 "id": chart.id,
@@ -1699,7 +1678,7 @@ class DashboardViewSet(viewsets.ModelViewSet):
                 "xField": chart.x_field,
                 "yField": chart.y_field,
                 "stackedFields": [],
-                "filters": chart.filters or {},
+                "filters": chart.filters or [],
                 "selectedFields": chart.selected_fields,
                 "data": rows,
             })
