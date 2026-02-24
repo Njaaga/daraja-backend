@@ -63,6 +63,7 @@ from dashboards.services.transform import transform_rows
 import traceback
 from dashboards.utils import apply_logic_rules, apply_calculated_fields, apply_filters
 from .utils import transform_rows_safe
+from .utils import apply_logic_expression
 
 # ---------------------------
 # USERS
