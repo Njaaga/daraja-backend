@@ -1581,14 +1581,20 @@ class DashboardViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["get"])
     def run(self, request, pk=None):
         dashboard = self.get_object()
+    
+        # 🔹 slicers from frontend
         slicers = request.query_params.dict()
+        print(f"[Dashboard {dashboard.id}] Received slicers: {slicers}")
+    
         charts_payload = []
     
         for dc in dashboard.dashboard_charts.all().order_by("order"):
             chart = dc.chart
+            print(f"[Dashboard {dashboard.id}] Processing chart {chart.id} ({chart.name})")
     
-            # ---------- Excel ----------
+            # ---------- Excel chart ----------
             if chart.excel_data:
+                print(f"[Chart {chart.id}] Using Excel data")
                 charts_payload.append({
                     "id": chart.id,
                     "name": chart.name,
@@ -1604,34 +1610,43 @@ class DashboardViewSet(viewsets.ModelViewSet):
     
             # ---------- QuickBooks Dataset ----------
             if chart.dataset:
-                cv = ChartViewSet()
-                cv.request = request
-                cv.format_kwarg = None
+                dataset = chart.dataset
+                print(f"[Chart {chart.id}] Fetching QuickBooks dataset {dataset.id}")
     
                 try:
-                    # 🔹 Fetch raw rows
-                    raw_rows = cv._execute_dataset_raw(chart)
-                    raw_rows = raw_rows or []
-                    print(f"[Dashboard {dashboard.id}] Chart {chart.id} raw rows: {len(raw_rows)}")
+                    # 🔹 Fetch raw data safely — do NOT modify dataset.filters
+                    cv = ChartViewSet()
+                    cv.request = request
+                    cv.format_kwarg = None
     
-                    # 🔹 Aggregate rows for chart (group by / sum / xField etc)
-                    aggregated_rows = cv._aggregate_rows_for_chart(chart, raw_rows)
-                    print(f"[Dashboard {dashboard.id}] Chart {chart.id} aggregated rows: {len(aggregated_rows)}")
+                    raw_rows = cv._execute_dataset_raw(chart) or []
+                    print(f"[Chart {chart.id}] Fetched {len(raw_rows)} rows from QuickBooks")
+    
+                    # 🔹 Build post-fetch filters (slicers + chart filters)
+                    post_filters = chart.filters.copy() if chart.filters else {}
+                    equals = post_filters.get("equals", {})
+                    for k, v in slicers.items():
+                        if k in ("from", "to", "date_field"):
+                            continue
+                        equals[k] = v
+                    post_filters["equals"] = equals
     
                     # 🔹 Apply calculated fields, logic rules, and filters safely
-                    transformed_rows = transform_rows_safe(
-                        aggregated_rows,
+                    rows = transform_rows_safe(
+                        raw_rows,
                         calculated_fields=getattr(chart, "calculated_fields", []),
                         logic_rules=getattr(chart, "logic_rules", []),
                         logic_expression=getattr(chart, "logic_expression", None),
-                        filters=chart.filters,
+                        filters=post_filters,
                     )
-                    print(f"[Dashboard {dashboard.id}] Chart {chart.id} rows after transform: {len(transformed_rows)}")
+                    print(f"[Chart {chart.id}] {len(rows)} rows after transforms")
     
-                    rows = transformed_rows
+                    # 🔹 Aggregate for chart if needed
+                    rows = cv._aggregate_rows_for_chart(chart, rows)
+                    print(f"[Chart {chart.id}] {len(rows)} rows after aggregation")
     
                 except Exception as e:
-                    print(f"[Dashboard {dashboard.id}] Failed chart {chart.id}: {e}")
+                    print(f"[Dashboard {dashboard.id}] Failed to process chart {chart.id}: {e}")
                     rows = []
     
                 charts_payload.append({
@@ -1646,6 +1661,7 @@ class DashboardViewSet(viewsets.ModelViewSet):
                     "data": rows,
                 })
     
+        print(f"[Dashboard {dashboard.id}] Finished processing, returning {len(charts_payload)} charts")
         return Response({
             "id": dashboard.id,
             "name": dashboard.name,
