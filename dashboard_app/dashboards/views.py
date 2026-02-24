@@ -1581,15 +1581,13 @@ class DashboardViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["get"])
     def run(self, request, pk=None):
         dashboard = self.get_object()
-    
-        # 🔹 Slicers from frontend
         slicers = request.query_params.dict()
         charts_payload = []
     
         for dc in dashboard.dashboard_charts.all().order_by("order"):
             chart = dc.chart
     
-            # ---------- Excel ----------
+            # ---------- Excel charts ----------
             if chart.excel_data:
                 charts_payload.append({
                     "id": chart.id,
@@ -1604,60 +1602,51 @@ class DashboardViewSet(viewsets.ModelViewSet):
                 })
                 continue
     
-            # ---------- QuickBooks Dataset ----------
+            # ---------- QuickBooks Dataset charts ----------
             if chart.dataset:
                 dataset = chart.dataset
     
-                # 🔹 Merge dashboard slicers into dataset filters
+                # Merge slicers into dataset filters
                 merged_filters = dataset.filters.copy() if dataset.filters else {}
+    
                 if slicers.get("from") and slicers.get("to") and slicers.get("date_field"):
                     merged_filters.update({
                         "date_field": slicers["date_field"],
                         "from": slicers["from"],
                         "to": slicers["to"],
                     })
+    
                 equals = merged_filters.get("equals", {})
                 for k, v in slicers.items():
-                    if k not in ("from", "to", "date_field"):
-                        equals[k] = v
+                    if k in ("from", "to", "date_field"):
+                        continue
+                    equals[k] = v
                 merged_filters["equals"] = equals
                 dataset.filters = merged_filters
     
-                # 🔹 Fetch raw dataset safely
+                # Execute dataset
                 try:
                     cv = ChartViewSet()
                     cv.request = request
                     cv.format_kwarg = None
     
+                    # 🔹 Get raw rows from QuickBooks
                     raw_rows = cv._execute_dataset_raw(chart)
     
-                    # 🔹 Only apply transform if there are calculated fields, logic rules, logic_expression, or filters
-                    if (getattr(chart, "calculated_fields", None)
-                            or getattr(chart, "logic_rules", None)
-                            or getattr(chart, "logic_expression", None)
-                            or chart.filters):
-                        rows = transform_rows_safe(
-                            raw_rows,
-                            calculated_fields=getattr(chart, "calculated_fields", []),
-                            logic_rules=getattr(chart, "logic_rules", []),
-                            logic_expression=getattr(chart, "logic_expression", None),
-                            filters=chart.filters,
-                        )
-                    else:
-                        rows = raw_rows
+                    # 🔹 Apply calculated fields, logic rules, and filters safely
+                    safe_rows = transform_rows_safe(
+                        raw_rows,
+                        calculated_fields=getattr(chart, "calculated_fields", []),
+                        logic_rules=getattr(chart, "logic_rules", []),
+                        logic_expression=getattr(chart, "logic_expression", None),
+                        filters=chart.filters,
+                    )
     
-                    # 🔹 Aggregate rows for chart
-                    rows = cv._aggregate_rows_for_chart(chart, rows)
-    
-                    # 🔹 Debug logging
-                    print(f"[Dashboard {dashboard.id}] Chart {chart.id} fetched {len(rows)} rows")
-                    if getattr(chart, "logic_expression", None):
-                        print(f"[DEBUG] logic_expression: {chart.logic_expression}")
-                    if chart.filters:
-                        print(f"[DEBUG] filters: {chart.filters}")
+                    # 🔹 Aggregate for chart rendering
+                    rows = cv._aggregate_rows_for_chart(chart, safe_rows)
     
                 except Exception as e:
-                    print(f"[Dashboard {dashboard.id}] Failed to process chart {chart.id}: {e}")
+                    print(f"[Dashboard {dashboard.id}] Failed chart {chart.id}: {e}")
                     rows = []
     
                 charts_payload.append({
