@@ -1583,11 +1583,14 @@ class DashboardViewSet(viewsets.ModelViewSet):
         dashboard = self.get_object()
         slicers = request.query_params.dict()
         charts_payload = []
-    
+
         for dc in dashboard.dashboard_charts.all().order_by("order"):
             chart = dc.chart
-    
+            print(f"\n[Dashboard {dashboard.id}] Processing chart {chart.id}: {chart.name}")
+
+            # ---------- Excel ----------
             if chart.excel_data:
+                print("Using Excel data")
                 charts_payload.append({
                     "id": chart.id,
                     "name": chart.name,
@@ -1600,60 +1603,68 @@ class DashboardViewSet(viewsets.ModelViewSet):
                     "data": chart.excel_data,
                 })
                 continue
-    
+
+            # ---------- QuickBooks Dataset ----------
+            rows = []
             if chart.dataset:
                 dataset = chart.dataset
-    
-                # Merge slicers into dataset filters
-                merged_filters = dataset.filters.copy() if dataset.filters else {}
+                merged_filters = deepcopy(dataset.filters) if dataset.filters else {}
+
+                # ----------------- Merge dashboard slicers -----------------
                 if slicers.get("from") and slicers.get("to") and slicers.get("date_field"):
                     merged_filters.update({
                         "date_field": slicers["date_field"],
                         "from": slicers["from"],
                         "to": slicers["to"],
                     })
+
                 equals = merged_filters.get("equals", {})
                 for k, v in slicers.items():
                     if k not in ("from", "to", "date_field"):
                         equals[k] = v
                 merged_filters["equals"] = equals
                 dataset.filters = merged_filters
-    
+
+                # ----------------- Execute dataset -----------------
                 try:
                     cv = ChartViewSet()
                     cv.request = request
                     cv.format_kwarg = None
-    
-                    # ✅ Use the version that actually works
-                    resp = cv._execute_dataset_with_aggregation(chart)
-                    rows = resp.data.get("data", []) if isinstance(resp, Response) else []
-    
-                    # Only apply transform_rows_safe if rows exist
-                    if rows:
-                        rows = transform_rows_safe(
-                            rows,
-                           # calculated_fields=getattr(chart, "calculated_fields", []),
-                            logic_rules=getattr(chart, "logic_rules", []),
-                            logic_expression=getattr(chart, "logic_expression", None),
-                            filters=chart.filters,
-                        )
-    
+
+                    # Get raw data from QuickBooks
+                    raw_rows = cv._execute_dataset_raw(chart)
+                    print(f"Raw rows fetched: {len(raw_rows)}")
+
+                    # ----------------- Apply calculated fields, logic, filters -----------------
+                    rows = transform_rows_safe(
+                        raw_rows,
+                        calculated_fields=getattr(chart, "calculated_fields", []),
+                        logic_rules=getattr(chart, "logic_rules", []),
+                        logic_expression=getattr(chart, "logic_expression", None),
+                        filters=chart.filters,
+                    )
+                    print(f"Rows after transform_rows_safe: {len(rows)}")
+
+                    # ----------------- Aggregate for chart -----------------
+                    rows = cv._aggregate_rows_for_chart(chart, rows)
+                    print(f"Rows after aggregation: {len(rows)}")
+
                 except Exception as e:
-                    print(f"[Dashboard {dashboard.id}] Chart {chart.id} failed: {e}")
+                    print(f"[Dashboard {dashboard.id}] Failed to process chart {chart.id}: {e}")
                     rows = []
-    
-                charts_payload.append({
-                    "id": chart.id,
-                    "name": chart.name,
-                    "type": chart.chart_type,
-                    "xField": chart.x_field,
-                    "yField": chart.y_field,
-                    "stackedFields": [],
-                    "filters": chart.filters or {},
-                    "selectedFields": chart.selected_fields,
-                    "data": rows,
-                })
-    
+
+            charts_payload.append({
+                "id": chart.id,
+                "name": chart.name,
+                "type": chart.chart_type,
+                "xField": chart.x_field,
+                "yField": chart.y_field,
+                "stackedFields": [],  # optionally compute stackedFields if needed
+                "filters": chart.filters or {},
+                "selectedFields": chart.selected_fields,
+                "data": rows,
+            })
+
         return Response({
             "id": dashboard.id,
             "name": dashboard.name,
