@@ -150,6 +150,52 @@ def apply_logic_rules(rows, logic_rules=None, logic_expression=None):
             out.append(r)
     return out
 
+def apply_logic_expression(rows, expr):
+    if not rows or not expr:
+        return rows
+
+    expr = expr.strip()
+    if not expr:
+        return rows
+
+    filtered_rows = []
+    # Split by AND / OR (case-insensitive)
+    clauses = re.split(r'\s+(AND|OR)\s+', expr, flags=re.IGNORECASE)
+
+    for r in rows:
+        keep = True
+        current_op = None  # Track AND / OR
+
+        for clause in clauses:
+            clause = clause.strip()
+            if clause.upper() in ("AND", "OR"):
+                current_op = clause.upper()
+                continue
+
+            # Parse simple equality Field="Value"
+            match = re.match(r'(\w+)\s*=\s*"(.*)"', clause)
+            if not match:
+                match = re.match(r'(\w+)\s*=\s*\'(.*)\'', clause)
+
+            if match:
+                field, val = match.groups()
+                actual = str(r.get(field, "")).strip()
+                result = actual == val
+            else:
+                # Unknown clause format → fail-safe
+                result = True
+
+            # Apply AND / OR
+            if current_op == "AND" or current_op is None:
+                keep = keep and result
+            elif current_op == "OR":
+                keep = keep or result
+
+        if keep:
+            filtered_rows.append(r)
+
+    return filtered_rows
+    
 # -------------------------
 # MAIN ENTRY
 # -------------------------
