@@ -1682,6 +1682,42 @@ class DashboardViewSet(viewsets.ModelViewSet):
                 except Exception as e:
                     print("QB ERROR:", e)
                     rows = []
+            # ---------- APPLY CHART UI FILTERS (SAFE MODE) ----------
+            if rows and isinstance(chart.filters, list):
+                filtered_rows = []
+            
+                for r in rows:
+                    keep = True
+            
+                    for f in chart.filters:
+                        field = f.get("field")
+                        operator = f.get("operator")
+                        value = f.get("value")
+            
+                        # Skip invalid filters
+                        if not field or value in (None, ""):
+                            continue
+            
+                        # If field missing, DO NOT filter out
+                        if field not in r:
+                            continue
+            
+                        actual = r.get(field)
+            
+                        if operator == "equals":
+                            if str(actual).strip().lower() != str(value).strip().lower():
+                                keep = False
+                                break
+            
+                        elif operator == "contains":
+                            if str(value).lower() not in str(actual).lower():
+                                keep = False
+                                break
+            
+                    if keep:
+                        filtered_rows.append(r)
+            
+                rows = filtered_rows
     
             charts_payload.append({
                 "id": chart.id,
