@@ -1512,7 +1512,35 @@ class ChartViewSet(viewsets.ModelViewSet):
             })
     
         return Response({"type": "dataset", "data": result})
-        
+
+# Helper to normalize saved filters to transform_rows_safe format
+def normalize_filters(filter_list):
+    """
+    Convert saved filter objects into the simple format used by transform_rows_safe.
+    Example input:
+    [
+        {"field": "AccountType", "operator": "equals", "value": "Expense"},
+        {"field": "AccountSubType", "operator": "contains", "value": "Legal"}
+    ]
+    Output:
+    {
+        "equals": {"AccountType": "Expense"},
+        "contains": {"AccountSubType": "Legal"}
+    }
+    """
+    normalized = {"equals": {}, "contains": {}}
+    for f in filter_list or []:
+        field = f.get("field")
+        op = f.get("operator")
+        val = f.get("value")
+        if not field or val in (None, ""):
+            continue
+        if op == "equals":
+            normalized["equals"][field] = val
+        elif op == "contains":
+            normalized["contains"][field] = val
+    return normalized
+    
 # ---------- Dashboards ----------
 class DashboardViewSet(viewsets.ModelViewSet):
     serializer_class = DashboardSerializer
@@ -1581,22 +1609,35 @@ class DashboardViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["get"])
     def run(self, request, pk=None):
         dashboard = self.get_object()
-        slicers = request.query_params.dict()
+        slicers = request.query_params.dict()  # from frontend
+
         charts_payload = []
-    
+
         for dc in dashboard.dashboard_charts.all().order_by("order"):
             chart = dc.chart
-            rows = []
-    
-            # ---------- Excel ----------
+
+            # ---------- Excel charts ----------
             if chart.excel_data:
-                rows = chart.excel_data
-    
+                charts_payload.append({
+                    "id": chart.id,
+                    "name": chart.name,
+                    "type": chart.chart_type,
+                    "xField": chart.x_field,
+                    "yField": chart.y_field,
+                    "stackedFields": [],
+                    "filters": chart.filters or {},
+                    "selectedFields": chart.selected_fields,
+                    "data": chart.excel_data,
+                })
+                continue
+
             # ---------- QuickBooks Dataset ----------
-            elif chart.dataset:
+            if chart.dataset:
                 dataset = chart.dataset
+
+                # Merge slicers into dataset filters
                 merged_filters = dataset.filters.copy() if dataset.filters else {}
-    
+
                 # Date range slicer
                 if slicers.get("from") and slicers.get("to") and slicers.get("date_field"):
                     merged_filters.update({
@@ -1604,59 +1645,55 @@ class DashboardViewSet(viewsets.ModelViewSet):
                         "from": slicers["from"],
                         "to": slicers["to"],
                     })
-    
-                # Equality slicers
+
+                # Equality slicers (override dataset filters)
                 equals = merged_filters.get("equals", {})
                 for k, v in slicers.items():
-                    if k not in ("from", "to", "date_field"):
-                        equals[k] = v
+                    if k in ("from", "to", "date_field"):
+                        continue
+                    equals[k] = v
                 merged_filters["equals"] = equals
+
                 dataset.filters = merged_filters
-    
-                # Execute dataset
+
                 try:
+                    # Execute dataset safely
                     cv = ChartViewSet()
                     cv.request = request
                     cv.format_kwarg = None
-    
-                    resp = cv._execute_dataset_with_aggregation(chart)
-                    rows = resp.data.get("data", []) if isinstance(resp, Response) else []
-    
-                except Exception as e:
-                    print(f"[Dashboard {dashboard.id}] Dataset execution failed for chart {chart.id}: {e}")
-                    rows = []
-    
-            # ---------- Apply transformations only if any exist ----------
-            if rows and (
-                getattr(chart, "calculated_fields", None) or
-                getattr(chart, "logic_rules", None) or
-                getattr(chart, "logic_expression", None) or
-                chart.filters
-            ):
-                try:
+
+                    # raw_rows from QuickBooks / dataset
+                    raw_rows = cv._execute_dataset_raw(chart)
+
+                    # Apply calculated fields, logic, filters
                     rows = transform_rows_safe(
-                        rows,
+                        raw_rows,
                         calculated_fields=getattr(chart, "calculated_fields", []),
                         logic_rules=getattr(chart, "logic_rules", []),
                         logic_expression=getattr(chart, "logic_expression", None),
-                        filters=chart.filters,
+                        filters=normalize_filters(chart.filters),
                     )
+
+                    # Aggregate rows for chart rendering
+                    rows = cv._aggregate_rows_for_chart(chart, rows)
+
                 except Exception as e:
-                    print(f"[Dashboard {dashboard.id}] Transform failed for chart {chart.id}: {e}")
+                    # Debug logging
+                    print(f"[Dashboard {dashboard.id}] Failed chart {chart.id}: {e}")
                     rows = []
-    
-            charts_payload.append({
-                "id": chart.id,
-                "name": chart.name,
-                "type": chart.chart_type,
-                "xField": chart.x_field,
-                "yField": chart.y_field,
-                "stackedFields": [],
-                "filters": chart.filters or {},
-                "selectedFields": chart.selected_fields,
-                "data": rows,
-            })
-    
+
+                charts_payload.append({
+                    "id": chart.id,
+                    "name": chart.name,
+                    "type": chart.chart_type,
+                    "xField": chart.x_field,
+                    "yField": chart.y_field,
+                    "stackedFields": [],
+                    "filters": chart.filters or {},
+                    "selectedFields": chart.selected_fields,
+                    "data": rows,
+                })
+
         return Response({
             "id": dashboard.id,
             "name": dashboard.name,
