@@ -1513,33 +1513,6 @@ class ChartViewSet(viewsets.ModelViewSet):
     
         return Response({"type": "dataset", "data": result})
 
-# Helper to normalize saved filters to transform_rows_safe format
-def normalize_filters(filter_list):
-    """
-    Convert saved filter objects into the simple format used by transform_rows_safe.
-    Example input:
-    [
-        {"field": "AccountType", "operator": "equals", "value": "Expense"},
-        {"field": "AccountSubType", "operator": "contains", "value": "Legal"}
-    ]
-    Output:
-    {
-        "equals": {"AccountType": "Expense"},
-        "contains": {"AccountSubType": "Legal"}
-    }
-    """
-    normalized = {"equals": {}, "contains": {}}
-    for f in filter_list or []:
-        field = f.get("field")
-        op = f.get("operator")
-        val = f.get("value")
-        if not field or val in (None, ""):
-            continue
-        if op == "equals":
-            normalized["equals"][field] = val
-        elif op == "contains":
-            normalized["contains"][field] = val
-    return normalized
     
 # ---------- Dashboards ----------
 class DashboardViewSet(viewsets.ModelViewSet):
@@ -1633,6 +1606,40 @@ class DashboardViewSet(viewsets.ModelViewSet):
             return current["value"]
     
         return current
+
+    def normalize_ui_filters(ui_filters):
+        """
+        Converts UI filter array into backend filter dict
+        """
+        if not ui_filters or not isinstance(ui_filters, list):
+            return None
+    
+        normalized = {
+            "equals": {},
+            "contains": {},
+            "gte": {},
+            "lte": {},
+        }
+    
+        for f in ui_filters:
+            field = f.get("field")
+            value = f.get("value")
+            operator = f.get("operator")
+    
+            if not field or value in (None, ""):
+                continue
+    
+            if operator == "equals":
+                normalized["equals"][field] = value
+            elif operator == "contains":
+                normalized["contains"][field] = value
+            elif operator == "gte":
+                normalized["gte"][field] = value
+            elif operator == "lte":
+                normalized["lte"][field] = value
+    
+        # Remove empty operators
+        return {k: v for k, v in normalized.items() if v}
     
     # 🔥 QB DASHBOARD EXECUTION
     @action(detail=True, methods=["get"])
@@ -1649,49 +1656,51 @@ class DashboardViewSet(viewsets.ModelViewSet):
             if chart.excel_data:
                 rows = chart.excel_data
     
-            # ---------- QuickBooks ----------
+            # ---------- QuickBooks Dataset ----------
             elif chart.dataset:
+                dataset = chart.dataset
+                merged_filters = dataset.filters.copy() if dataset.filters else {}
+    
+                # Date range slicer
+                if slicers.get("from") and slicers.get("to") and slicers.get("date_field"):
+                    merged_filters.update({
+                        "date_field": slicers["date_field"],
+                        "from": slicers["from"],
+                        "to": slicers["to"],
+                    })
+    
+                # Equality slicers
+                equals = merged_filters.get("equals", {})
+                for k, v in slicers.items():
+                    if k not in ("from", "to", "date_field"):
+                        equals[k] = v
+                merged_filters["equals"] = equals
+                dataset.filters = merged_filters
+    
                 try:
                     cv = ChartViewSet()
                     cv.request = request
                     cv.format_kwarg = None
     
-                    # STEP 1: normal execution (your WORKING path)
                     resp = cv._execute_dataset_with_aggregation(chart)
                     rows = resp.data.get("data", []) if isinstance(resp, Response) else []
     
-                    # STEP 2: apply filters ONLY if they exist
-                    if rows and chart.filters:
-                        # get RAW rows safely
-                        raw_rows = cv._execute_dataset_raw(chart)
-    
-                        for f in chart.filters:
-                            field = f.get("field")
-                            value = f.get("value")
-                            operator = f.get("operator")
-    
-                            if not field or value in ("", None):
-                                continue
-    
-                            if operator == "equals":
-                                raw_rows = [
-                                    r for r in raw_rows
-                                    if str(resolve_field(r, field)).lower()
-                                    == str(value).lower()
-                                ]
-    
-                        # STEP 3: re-aggregate after filtering
-                        rows = cv._aggregate_rows_for_chart(chart, raw_rows)
-    
-                    # STEP 4: logic gates (SAFE – post aggregation)
-                    if rows and chart.logic_expression:
-                        rows = transform_rows_safe(
-                            rows,
-                            logic_expression=chart.logic_expression,
-                        )
-    
                 except Exception as e:
-                    print(f"[Dashboard {dashboard.id}] Chart {chart.id} failed:", e)
+                    print(f"[Dashboard {dashboard.id}] Dataset failed for chart {chart.id}: {e}")
+                    rows = []
+    
+            # ---------- APPLY LOGIC + FILTERS (FIXED) ----------
+            if rows:
+                try:
+                    rows = transform_rows_safe(
+                        rows,
+                        calculated_fields=getattr(chart, "calculated_fields", []),
+                        logic_rules=getattr(chart, "logic_rules", []),
+                        logic_expression=chart.logic_expression,
+                        filters=normalize_ui_filters(chart.filters),  # ✅ FIX
+                    )
+                except Exception as e:
+                    print(f"[Dashboard {dashboard.id}] Transform failed for chart {chart.id}: {e}")
                     rows = []
     
             charts_payload.append({
