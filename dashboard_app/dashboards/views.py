@@ -1581,29 +1581,14 @@ class DashboardViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["get"])
     def run(self, request, pk=None):
         dashboard = self.get_object()
-    
         slicers = request.query_params.dict()
         charts_payload = []
-    
-        print("====== DASHBOARD RUN START ======")
-        print("Dashboard ID:", dashboard.id)
-        print("Slicers:", slicers)
     
         for dc in dashboard.dashboard_charts.all().order_by("order"):
             chart = dc.chart
     
-            print("\n--- Chart ---")
-            print("Chart ID:", chart.id)
-            print("Chart Name:", chart.name)
-            print("Chart Type:", chart.chart_type)
-            print("xField:", chart.x_field)
-            print("yField:", chart.y_field)
-    
-            # ----------------------------
-            # Excel charts
-            # ----------------------------
+            # ---------- Excel ----------
             if chart.excel_data:
-                print("Excel chart → returning stored data")
                 charts_payload.append({
                     "id": chart.id,
                     "name": chart.name,
@@ -1617,102 +1602,49 @@ class DashboardViewSet(viewsets.ModelViewSet):
                 })
                 continue
     
-            # ----------------------------
-            # QuickBooks charts
-            # ----------------------------
-            if not chart.dataset:
-                print("❌ No dataset attached")
-                continue
-    
-            dataset = chart.dataset
-    
-            # Merge slicers
-            merged_filters = dataset.filters.copy() if dataset.filters else {}
-    
-            if slicers.get("from") and slicers.get("to") and slicers.get("date_field"):
-                merged_filters.update({
-                    "date_field": slicers["date_field"],
-                    "from": slicers["from"],
-                    "to": slicers["to"],
-                })
-    
-            equals = merged_filters.get("equals", {})
-            for k, v in slicers.items():
-                if k not in ("from", "to", "date_field"):
-                    equals[k] = v
-            merged_filters["equals"] = equals
-    
-            dataset.filters = merged_filters
-    
-            print("Merged dataset filters:", merged_filters)
-    
-            try:
+            # ---------- QuickBooks Dataset ----------
+            if chart.dataset:
                 cv = ChartViewSet()
                 cv.request = request
                 cv.format_kwarg = None
     
-                # ============================
-                # 1️⃣ RAW DATA
-                # ============================
-                raw_rows = cv._execute_dataset_raw(chart)
+                try:
+                    # 🔹 Fetch raw rows
+                    raw_rows = cv._execute_dataset_raw(chart)
+                    raw_rows = raw_rows or []
+                    print(f"[Dashboard {dashboard.id}] Chart {chart.id} raw rows: {len(raw_rows)}")
     
-                print("RAW ROW COUNT:", len(raw_rows))
-                if raw_rows:
-                    print("RAW SAMPLE ROW:", raw_rows[0])
+                    # 🔹 Aggregate rows for chart (group by / sum / xField etc)
+                    aggregated_rows = cv._aggregate_rows_for_chart(chart, raw_rows)
+                    print(f"[Dashboard {dashboard.id}] Chart {chart.id} aggregated rows: {len(aggregated_rows)}")
     
-                # ============================
-                # 2️⃣ TRANSFORM (NO LOGIC)
-                # ============================
-                transformed_rows = transform_rows_safe(
-                    raw_rows,
-                    calculated_fields=chart.calculated_fields or [],
-                    logic_rules=None,          # IMPORTANT
-                    logic_expression=None,
-                    filters=None               # IMPORTANT
-                )
+                    # 🔹 Apply calculated fields, logic rules, and filters safely
+                    transformed_rows = transform_rows_safe(
+                        aggregated_rows,
+                        calculated_fields=getattr(chart, "calculated_fields", []),
+                        logic_rules=getattr(chart, "logic_rules", []),
+                        logic_expression=getattr(chart, "logic_expression", None),
+                        filters=chart.filters,
+                    )
+                    print(f"[Dashboard {dashboard.id}] Chart {chart.id} rows after transform: {len(transformed_rows)}")
     
-                print("AFTER TRANSFORM COUNT:", len(transformed_rows))
-                if transformed_rows:
-                    print("TRANSFORM SAMPLE ROW:", transformed_rows[0])
+                    rows = transformed_rows
     
-                # ============================
-                # 3️⃣ AGGREGATE
-                # ============================
-                aggregated_rows = cv._aggregate_rows_for_chart(chart, transformed_rows)
+                except Exception as e:
+                    print(f"[Dashboard {dashboard.id}] Failed chart {chart.id}: {e}")
+                    rows = []
     
-                print("AFTER AGGREGATION COUNT:", len(aggregated_rows))
-                if aggregated_rows:
-                    print("AGG SAMPLE ROW:", aggregated_rows[0])
-    
-                # ============================
-                # 4️⃣ LOGIC GATES (POST-AGG)
-                # ============================
-                final_rows = apply_logic_rules(
-                    aggregated_rows,
-                    chart.logic_rules or [],
-                    chart.logic_expression
-                )
-    
-                print("AFTER LOGIC COUNT:", len(final_rows))
-    
-            except Exception as e:
-                print("❌ ERROR processing chart:", chart.id)
-                print(str(e))
-                final_rows = []
-    
-            charts_payload.append({
-                "id": chart.id,
-                "name": chart.name,
-                "type": chart.chart_type,
-                "xField": chart.x_field,
-                "yField": chart.y_field,
-                "stackedFields": [],
-                "filters": chart.filters or {},
-                "selectedFields": chart.selected_fields,
-                "data": final_rows,
-            })
-    
-        print("====== DASHBOARD RUN END ======")
+                charts_payload.append({
+                    "id": chart.id,
+                    "name": chart.name,
+                    "type": chart.chart_type,
+                    "xField": chart.x_field,
+                    "yField": chart.y_field,
+                    "stackedFields": [],
+                    "filters": chart.filters or {},
+                    "selectedFields": chart.selected_fields,
+                    "data": rows,
+                })
     
         return Response({
             "id": dashboard.id,
