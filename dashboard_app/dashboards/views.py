@@ -1656,12 +1656,12 @@ class DashboardViewSet(viewsets.ModelViewSet):
             if chart.excel_data:
                 rows = chart.excel_data
     
-            # ---------- QuickBooks Dataset ----------
+            # ---------- QuickBooks ----------
             elif chart.dataset:
                 dataset = chart.dataset
                 merged_filters = dataset.filters.copy() if dataset.filters else {}
     
-                # Date range slicer
+                # Date slicer
                 if slicers.get("from") and slicers.get("to") and slicers.get("date_field"):
                     merged_filters.update({
                         "date_field": slicers["date_field"],
@@ -1669,12 +1669,6 @@ class DashboardViewSet(viewsets.ModelViewSet):
                         "to": slicers["to"],
                     })
     
-                # Equality slicers
-                equals = merged_filters.get("equals", {})
-                for k, v in slicers.items():
-                    if k not in ("from", "to", "date_field"):
-                        equals[k] = v
-                merged_filters["equals"] = equals
                 dataset.filters = merged_filters
     
                 try:
@@ -1686,21 +1680,7 @@ class DashboardViewSet(viewsets.ModelViewSet):
                     rows = resp.data.get("data", []) if isinstance(resp, Response) else []
     
                 except Exception as e:
-                    print(f"[Dashboard {dashboard.id}] Dataset failed for chart {chart.id}: {e}")
-                    rows = []
-    
-            # ---------- APPLY LOGIC + FILTERS (FIXED) ----------
-            if rows:
-                try:
-                    rows = transform_rows_safe(
-                        rows,
-                        calculated_fields=getattr(chart, "calculated_fields", []),
-                        logic_rules=getattr(chart, "logic_rules", []),
-                        logic_expression=chart.logic_expression,
-                        filters=normalize_ui_filters(chart.filters),  # ✅ FIX
-                    )
-                except Exception as e:
-                    print(f"[Dashboard {dashboard.id}] Transform failed for chart {chart.id}: {e}")
+                    print("QB ERROR:", e)
                     rows = []
     
             charts_payload.append({
@@ -1710,7 +1690,7 @@ class DashboardViewSet(viewsets.ModelViewSet):
                 "xField": chart.x_field,
                 "yField": chart.y_field,
                 "stackedFields": [],
-                "filters": chart.filters or [],
+                "filters": [],
                 "selectedFields": chart.selected_fields,
                 "data": rows,
             })
