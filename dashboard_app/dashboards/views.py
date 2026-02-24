@@ -1669,20 +1669,20 @@ class DashboardViewSet(viewsets.ModelViewSet):
                     field = f.get("field")
                     value = f.get("value")
                     operator = f.get("operator")
-    
+            
                     if not field or value in (None, ""):
                         continue
-    
+            
                     if operator == "equals":
                         rows = [
                             r for r in rows
-                            if str(r.get(field)) == str(value)
+                            if str(resolve_field(r, field)).lower() == str(value).lower()
                         ]
-    
+            
                     elif operator == "contains":
                         rows = [
                             r for r in rows
-                            if value.lower() in str(r.get(field, "")).lower()
+                            if value.lower() in str(resolve_field(r, field) or "").lower()
                         ]
     
             # ---------- APPLY LOGIC EXPRESSION ----------
