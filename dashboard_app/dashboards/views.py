@@ -874,6 +874,7 @@ class DatasetViewSet(viewsets.ModelViewSet):
         """
         Executes a dataset against its data source.
         Supports QuickBooks (POST /query) and generic REST APIs.
+        Handles scalar vs nested fields for QB to avoid 400 Bad Request.
         """
         source = dataset.api_source
         params = dataset.query_params.copy() if dataset.query_params else {}
@@ -885,7 +886,7 @@ class DatasetViewSet(viewsets.ModelViewSet):
             if not source.bearer_token or not source.base_url:
                 return Response(
                     {"error": "QuickBooks access token or base URL missing."},
-                    status=400
+                    status=status.HTTP_400_BAD_REQUEST
                 )
     
             # Refresh token if expired
@@ -895,7 +896,7 @@ class DatasetViewSet(viewsets.ModelViewSet):
                 except requests.RequestException as e:
                     return Response(
                         {"error": f"Failed to refresh QuickBooks token: {str(e)}"},
-                        status=502
+                        status=status.HTTP_502_BAD_GATEWAY
                     )
     
             headers = {
@@ -904,39 +905,50 @@ class DatasetViewSet(viewsets.ModelViewSet):
                 "Content-Type": "application/text",
             }
     
+            # Get entity & fields
             entity = getattr(dataset, "entity", None)
             fields = getattr(dataset, "fields", None)
-            filters = getattr(dataset, "filters", {}) or {}
     
             if not entity:
-                return Response({"error": "QuickBooks entity must be selected."}, status=400)
+                return Response(
+                    {"error": "QuickBooks entity must be selected."},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
             if not fields or not isinstance(fields, list) or len(fields) == 0:
-                return Response({"error": "Select at least one field for QuickBooks entity."}, status=400)
+                return Response(
+                    {"error": "Select at least one field for QuickBooks entity."},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
     
-            # ----------------------------
-            # Split scalar vs nested fields
-            # ----------------------------
+            # ----------------------
+            # Separate scalar and nested fields
+            # ----------------------
             scalar_fields = []
             nested_fields = []
+            # known nested/complex QB fields that cannot go in SELECT
+            complex_fields = {"Line", "sparse", "domain", "VendorRef", "VendorAddr", "MetaData"}
             for f in fields:
-                if "." in f:  # nested field
+                if f in complex_fields or "." in f:
                     nested_fields.append(f)
                 else:
                     scalar_fields.append(f)
     
+            # ensure at least one scalar field
             if not scalar_fields:
-                # QB SELECT cannot be empty, must have at least one scalar
                 scalar_fields = ["Id"]
     
-            # ----------------------------
-            # Build QB Query
-            # ----------------------------
+            # Build QB query
             query = f"SELECT {', '.join(scalar_fields)} FROM {entity} STARTPOSITION 1 MAXRESULTS 100"
+    
+            # Apply filters
+            filters = getattr(dataset, "filters", {}) or {}
             where_clauses = []
     
             # Date range filter
             if filters.get("date_field") and filters.get("from") and filters.get("to"):
-                where_clauses.append(f"{filters['date_field']} BETWEEN '{filters['from']}' AND '{filters['to']}'")
+                where_clauses.append(
+                    f"{filters['date_field']} BETWEEN '{filters['from']}' AND '{filters['to']}'"
+                )
     
             # Equals filters
             for k, v in filters.get("equals", {}).items():
@@ -947,7 +959,7 @@ class DatasetViewSet(viewsets.ModelViewSet):
     
             url = f"{source.base_url}/query"
     
-            # Debug
+            # Debug logs
             print("[QB QUERY]", query)
             print("[QB URL]", url)
     
@@ -959,23 +971,30 @@ class DatasetViewSet(viewsets.ModelViewSet):
             except requests.RequestException as e:
                 return Response(
                     {"error": "QuickBooks request failed", "details": str(e), "query": query},
-                    status=502
+                    status=status.HTTP_502_BAD_GATEWAY
                 )
     
-            # Check QB API logical errors
+            # Check QB API errors
             if "Fault" in payload:
                 return Response(
                     {"error": "QuickBooks API error", "details": payload["Fault"], "query": query},
-                    status=400
+                    status=status.HTTP_400_BAD_REQUEST
                 )
     
             query_response = payload.get("QueryResponse", {})
+            if not query_response:
+                return Response({
+                    "entity": entity,
+                    "fields": fields,
+                    "count": 0,
+                    "data": []
+                })
+    
+            # Extract rows
             entity_key = next(iter(query_response.keys()), None)
             rows = query_response.get(entity_key, []) if entity_key else []
     
-            # ----------------------------
             # Expand nested fields
-            # ----------------------------
             def expand_row(row):
                 result = {f: row.get(f, "") for f in scalar_fields}
                 for nf in nested_fields:
@@ -983,16 +1002,16 @@ class DatasetViewSet(viewsets.ModelViewSet):
                     val = row
                     for p in parts:
                         val = val.get(p, {}) if isinstance(val, dict) else None
-                    result[nf] = val or ""
+                    result[nf] = val if val is not None else ""
                 return result
     
-            data = [expand_row(r) for r in rows]
+            expanded_rows = [expand_row(r) for r in rows]
     
             return Response({
                 "entity": entity,
                 "fields": fields,
-                "count": len(data),
-                "data": data,
+                "count": len(expanded_rows),
+                "data": expanded_rows,
             })
     
         # ---------------- Generic REST APIs ----------------
@@ -1014,7 +1033,7 @@ class DatasetViewSet(viewsets.ModelViewSet):
                 resp.raise_for_status()
                 data = resp.json()
             except requests.RequestException as e:
-                return Response({"error": str(e)}, status=502)
+                return Response({"error": str(e)}, status=status.HTTP_502_BAD_GATEWAY)
     
             # Flatten standard API responses
             if isinstance(data, dict):
@@ -1024,7 +1043,6 @@ class DatasetViewSet(viewsets.ModelViewSet):
                         break
     
             return Response({"data": data})
-
     
     
     # ---------- QUICKBOOKS EXECUTOR ----------
