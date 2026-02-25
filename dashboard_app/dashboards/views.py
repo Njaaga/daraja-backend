@@ -1,6 +1,7 @@
 import time
 import logging
 from django.utils import timezone
+from urllib.parse import urljoin
 from django.contrib.auth.models import User
 from django.contrib.auth.tokens import default_token_generator
 from django.core.mail import send_mail
