@@ -874,7 +874,6 @@ class DatasetViewSet(viewsets.ModelViewSet):
         """
         Executes a dataset against its data source.
         Supports QuickBooks (POST /query) and generic REST APIs.
-        Automatically handles nested object fields for QB.
         """
         source = dataset.api_source
         params = dataset.query_params.copy() if dataset.query_params else {}
@@ -882,6 +881,7 @@ class DatasetViewSet(viewsets.ModelViewSet):
     
         # ---------------- QuickBooks ----------------
         if source.provider.lower() == "quickbooks":
+            # Ensure credentials
             if not source.bearer_token or not source.base_url:
                 return Response(
                     {"error": "QuickBooks access token or base URL missing."},
@@ -906,39 +906,39 @@ class DatasetViewSet(viewsets.ModelViewSet):
     
             entity = getattr(dataset, "entity", None)
             fields = getattr(dataset, "fields", None)
+            filters = getattr(dataset, "filters", {}) or {}
     
             if not entity:
                 return Response({"error": "QuickBooks entity must be selected."}, status=400)
             if not fields or not isinstance(fields, list) or len(fields) == 0:
                 return Response({"error": "Select at least one field for QuickBooks entity."}, status=400)
     
-            # ------------------ Split scalar vs nested fields ------------------
-            SCALAR_FIELDS = []
-            NESTED_FIELDS = []
-    
-            # QB nested objects (common)
-            NESTED_OBJECTS = ["APAccountRef", "CurrencyRef", "VendorRef", "VendorAddr", "Line"]
-    
+            # ----------------------------
+            # Split scalar vs nested fields
+            # ----------------------------
+            scalar_fields = []
+            nested_fields = []
             for f in fields:
-                if any(f.startswith(obj) for obj in NESTED_OBJECTS):
-                    NESTED_FIELDS.append(f)
+                if "." in f:  # nested field
+                    nested_fields.append(f)
                 else:
-                    SCALAR_FIELDS.append(f)
+                    scalar_fields.append(f)
     
-            # Ensure we have at least one scalar field for SELECT
-            if not SCALAR_FIELDS:
-                SCALAR_FIELDS = ["Id"]  # always safe to select
+            if not scalar_fields:
+                # QB SELECT cannot be empty, must have at least one scalar
+                scalar_fields = ["Id"]
     
-            query = f"SELECT {', '.join(SCALAR_FIELDS)} FROM {entity} STARTPOSITION 1 MAXRESULTS 100"
-    
-            # Apply filters
-            filters = getattr(dataset, "filters", {}) or {}
+            # ----------------------------
+            # Build QB Query
+            # ----------------------------
+            query = f"SELECT {', '.join(scalar_fields)} FROM {entity} STARTPOSITION 1 MAXRESULTS 100"
             where_clauses = []
     
+            # Date range filter
             if filters.get("date_field") and filters.get("from") and filters.get("to"):
-                where_clauses.append(
-                    f"{filters['date_field']} BETWEEN '{filters['from']}' AND '{filters['to']}'"
-                )
+                where_clauses.append(f"{filters['date_field']} BETWEEN '{filters['from']}' AND '{filters['to']}'")
+    
+            # Equals filters
             for k, v in filters.get("equals", {}).items():
                 where_clauses.append(f"{k} = '{v}'")
     
@@ -946,6 +946,8 @@ class DatasetViewSet(viewsets.ModelViewSet):
                 query += " WHERE " + " AND ".join(where_clauses)
     
             url = f"{source.base_url}/query"
+    
+            # Debug
             print("[QB QUERY]", query)
             print("[QB URL]", url)
     
@@ -953,29 +955,36 @@ class DatasetViewSet(viewsets.ModelViewSet):
                 resp = requests.post(url, data=query, headers=headers, timeout=20)
                 resp.raise_for_status()
                 payload = resp.json()
+                print("[QB RESPONSE]", payload)
             except requests.RequestException as e:
-                return Response({"error": "QuickBooks request failed", "details": str(e), "query": query}, status=502)
+                return Response(
+                    {"error": "QuickBooks request failed", "details": str(e), "query": query},
+                    status=502
+                )
     
+            # Check QB API logical errors
             if "Fault" in payload:
-                return Response({"error": "QuickBooks API error", "details": payload["Fault"], "query": query}, status=400)
+                return Response(
+                    {"error": "QuickBooks API error", "details": payload["Fault"], "query": query},
+                    status=400
+                )
     
             query_response = payload.get("QueryResponse", {})
             entity_key = next(iter(query_response.keys()), None)
             rows = query_response.get(entity_key, []) if entity_key else []
     
-            # ---------------- Expand nested fields ----------------
+            # ----------------------------
+            # Expand nested fields
+            # ----------------------------
             def expand_row(row):
-                expanded = {}
-                for f in NESTED_FIELDS:
-                    parts = f.split(".")
+                result = {f: row.get(f, "") for f in scalar_fields}
+                for nf in nested_fields:
+                    parts = nf.split(".")
                     val = row
                     for p in parts:
                         val = val.get(p, {}) if isinstance(val, dict) else None
-                    expanded[f] = val if val is not None else ""
-                # Include scalar fields
-                for f in SCALAR_FIELDS:
-                    expanded[f] = row.get(f, "")
-                return expanded
+                    result[nf] = val or ""
+                return result
     
             data = [expand_row(r) for r in rows]
     
@@ -988,7 +997,11 @@ class DatasetViewSet(viewsets.ModelViewSet):
     
         # ---------------- Generic REST APIs ----------------
         else:
-            url = urljoin(source.base_url.rstrip("/") + "/", (dataset.endpoint or "").lstrip("/"))
+            url = urljoin(
+                source.base_url.rstrip("/") + "/",
+                (dataset.endpoint or "").lstrip("/")
+            )
+    
             if source.auth_type == "API_KEY_HEADER" and source.api_key:
                 headers[source.api_key_header] = source.api_key
             elif source.auth_type == "BEARER" and source.api_key:
