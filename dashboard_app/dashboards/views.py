@@ -633,34 +633,34 @@ class ApiDataSourceViewSet(viewsets.ModelViewSet):
         return Response({"success": True})
 
 
-# ---------------- QuickBooks Entities List ----------------
-@action(detail=True, methods=["get"], url_path="entities")
-def entities(self, request, pk=None):
-    """
-    Returns supported QuickBooks entities for this data source
-    Endpoint:
-    GET /api/api-sources/{id}/entities/
-    """
-    api_source = self.get_object()
-
-    if api_source.provider.lower() != "quickbooks":
-        return Response([])
-
-    # Central registry (authoritative)
-    QUICKBOOKS_ENTITIES = [
-        "Invoice",
-        "Customer",
-        "Payment",
-        "Account",
-        "Item",
-        "Vendor",
-        "Bill",
-    ]
-
-    # Format consistently for frontend dropdown
-    entities_formatted = [{"value": e, "label": e} for e in QUICKBOOKS_ENTITIES]
-
-    return Response(entities_formatted)
+    # ---------------- QuickBooks Entities List ----------------
+    @action(detail=True, methods=["get"], url_path="entities")
+    def entities(self, request, pk=None):
+        """
+        Returns supported QuickBooks entities for this data source
+        Endpoint:
+        GET /api/api-sources/{id}/entities/
+        """
+        api_source = self.get_object()
+    
+        if api_source.provider.lower() != "quickbooks":
+            return Response([])
+    
+        # Central registry (authoritative)
+        QUICKBOOKS_ENTITIES = [
+            "Invoice",
+            "Customer",
+            "Payment",
+            "Account",
+            "Item",
+            "Vendor",
+            "Bill",
+        ]
+    
+        # Format consistently for frontend dropdown
+        entities_formatted = [{"value": e, "label": e} for e in QUICKBOOKS_ENTITIES]
+    
+        return Response(entities_formatted)
     
     # ---------------- QuickBooks Entity Fields Endpoint ----------------
     @action(
