@@ -886,7 +886,7 @@ class DatasetViewSet(viewsets.ModelViewSet):
                     {"error": "QuickBooks access token or base URL missing."},
                     status=status.HTTP_400_BAD_REQUEST
                 )
-    
+        
             # Refresh token if expired
             if getattr(source, "oauth_token_expires_at", None) and source.oauth_token_expires_at <= timezone.now():
                 try:
@@ -896,83 +896,70 @@ class DatasetViewSet(viewsets.ModelViewSet):
                         {"error": f"Failed to refresh QuickBooks token: {str(e)}"},
                         status=status.HTTP_502_BAD_GATEWAY
                     )
-    
+        
             headers = {
                 "Authorization": f"Bearer {source.bearer_token}",
                 "Accept": "application/json",
-                "Content-Type": "application/text",  # QB expects raw query in body
+                "Content-Type": "application/text; charset=utf-8",
             }
-    
+        
             # Get entity & fields
             entity = getattr(dataset, "entity", None)
             fields = getattr(dataset, "fields", None)
-    
+        
             if not entity:
-                return Response(
-                    {"error": "QuickBooks entity must be selected."},
-                    status=status.HTTP_400_BAD_REQUEST
-                )
+                return Response({"error": "QuickBooks entity must be selected."}, status=400)
             if not fields or not isinstance(fields, list) or len(fields) == 0:
-                return Response(
-                    {"error": "Select at least one field for QuickBooks entity."},
-                    status=status.HTTP_400_BAD_REQUEST
-                )
-    
+                return Response({"error": "Select at least one field for QuickBooks entity."}, status=400)
+        
             # Build query
-            query = f"SELECT {', '.join(fields)} FROM {entity}"
+            query = f"SELECT {', '.join(fields)} FROM {entity} STARTPOSITION 1 MAXRESULTS 100"
+        
             filters = getattr(dataset, "filters", {}) or {}
             where_clauses = []
-    
-            # Date range filter
+        
             if filters.get("date_field") and filters.get("from") and filters.get("to"):
                 where_clauses.append(
                     f"{filters['date_field']} BETWEEN '{filters['from']}' AND '{filters['to']}'"
                 )
-    
-            # Equals filters
+        
             for k, v in filters.get("equals", {}).items():
                 where_clauses.append(f"{k} = '{v}'")
-    
+        
             if where_clauses:
                 query += " WHERE " + " AND ".join(where_clauses)
-    
+        
             url = f"{source.base_url}/query"
-    
-            # Debug logs
+        
             print("[QB QUERY]", query)
             print("[QB URL]", url)
-    
+        
             try:
-                resp = requests.post(url, data=query, headers=headers, timeout=20)
+                resp = requests.post(url, data=query, headers=headers, timeout=60)  # increased timeout
                 resp.raise_for_status()
                 payload = resp.json()
                 print("[QB RESPONSE]", payload)
             except requests.RequestException as e:
                 return Response(
                     {"error": "QuickBooks request failed", "details": str(e), "query": query},
-                    status=status.HTTP_502_BAD_GATEWAY
+                    status=502
                 )
-    
-            # Check QuickBooks logical errors
+            except ValueError as e:
+                return Response(
+                    {"error": "QuickBooks returned invalid JSON", "details": str(e), "query": query},
+                    status=502
+                )
+        
             if "Fault" in payload:
                 return Response(
                     {"error": "QuickBooks API error", "details": payload["Fault"], "query": query},
-                    status=status.HTTP_400_BAD_REQUEST
+                    status=400
                 )
-    
+        
             query_response = payload.get("QueryResponse", {})
-            if not query_response:
-                return Response({
-                    "entity": entity,
-                    "fields": fields,
-                    "count": 0,
-                    "data": []
-                })
-    
-            # Extract rows (QB returns key by entity name)
             entity_key = next(iter(query_response.keys()), None)
             rows = query_response.get(entity_key, []) if entity_key else []
-    
+        
             return Response({
                 "entity": entity,
                 "fields": fields,
