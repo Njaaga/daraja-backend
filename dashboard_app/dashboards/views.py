@@ -670,27 +670,37 @@ class ApiDataSourceViewSet(viewsets.ModelViewSet):
     )
     def entity_fields(self, request, pk=None, entity=None):
         """
-        Returns REAL QuickBooks entity fields by querying QB.
-        Endpoint:
-        GET /api/api-sources/{id}/entities/{entity}/fields/
+        Returns real QuickBooks entity fields by querying QB.
+        Endpoint: /api/api-sources/{id}/entities/{entity}/fields/
         """
     
         api_source = self.get_object()
     
-        # ---------------------------- Validate provider ----------------------------
+        # Validate provider
         if api_source.provider.lower() != "quickbooks":
             return Response(
                 {"error": "Not a QuickBooks API source"},
                 status=status.HTTP_400_BAD_REQUEST
             )
     
+        # Validate credentials
         if not api_source.bearer_token or not api_source.base_url:
             return Response(
                 {"error": "QuickBooks source is not authenticated"},
                 status=status.HTTP_400_BAD_REQUEST
             )
     
-        # ---------------------------- Normalize entity name ----------------------------
+        # Refresh token if expired
+        if getattr(api_source, "oauth_token_expires_at", None) and api_source.oauth_token_expires_at <= timezone.now():
+            try:
+                refresh_quickbooks_token(api_source)
+            except requests.RequestException as e:
+                return Response(
+                    {"error": "Failed to refresh QuickBooks token", "details": str(e)},
+                    status=status.HTTP_502_BAD_GATEWAY
+                )
+    
+        # Normalize entity
         ENTITY_MAP = {
             "invoice": "Invoice",
             "customer": "Customer",
@@ -700,18 +710,16 @@ class ApiDataSourceViewSet(viewsets.ModelViewSet):
             "vendor": "Vendor",
             "bill": "Bill",
         }
-    
-        entity_key = entity.lower()
-        qb_entity = ENTITY_MAP.get(entity_key)
+        qb_entity = ENTITY_MAP.get(entity.lower())
         if not qb_entity:
             return Response(
                 {"error": f"Unsupported entity: {entity}"},
                 status=status.HTTP_400_BAD_REQUEST
             )
     
-        # ---------------------------- Build QuickBooks Query ----------------------------
+        # Build QB query
         qb_query_url = f"{api_source.base_url}/query"
-        query = f"SELECT * FROM {qb_entity} MAXRESULTS 1"
+        query = f"SELECT * FROM {qb_entity} STARTPOSITION 1 MAXRESULTS 1"
     
         headers = {
             "Authorization": f"Bearer {api_source.bearer_token}",
@@ -719,66 +727,53 @@ class ApiDataSourceViewSet(viewsets.ModelViewSet):
             "Content-Type": "application/text",
         }
     
-        # ---------------------------- Execute QuickBooks query ----------------------------
+        # Execute query
         try:
-            resp = requests.post(
-                qb_query_url,
-                data=query,
-                headers=headers,
-                timeout=20,
-            )
+            resp = requests.post(qb_query_url, data=query, headers=headers, timeout=60)
             resp.raise_for_status()
             payload = resp.json()
-            print(f"[QB ENTITY FIELDS RESPONSE] {qb_entity}:", payload)  # debug log
         except requests.RequestException as e:
             return Response(
                 {"error": "Failed to connect to QuickBooks", "details": str(e)},
-                status=status.HTTP_502_BAD_GATEWAY,
+                status=status.HTTP_502_BAD_GATEWAY
             )
-    
-        # ---------------------------- Handle QuickBooks errors ----------------------------
-        if resp.status_code != 200:
+        except ValueError as e:
             return Response(
-                {
-                    "error": "QuickBooks query failed",
-                    "status_code": resp.status_code,
-                    "qb_response": resp.json() if "json" in resp.headers.get("content-type", "") else resp.text,
-                    "query": query,
-                    "url": qb_query_url,
-                },
-                status=status.HTTP_400_BAD_REQUEST,
+                {"error": "Invalid JSON response from QuickBooks", "details": str(e)},
+                status=status.HTTP_502_BAD_GATEWAY
             )
     
-        # ---------------------------- Extract fields ----------------------------
+        # Check for QB logical errors
+        if "Fault" in payload:
+            return Response(
+                {"error": "QuickBooks API error", "details": payload["Fault"]},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+    
         query_response = payload.get("QueryResponse", {})
         records = query_response.get(qb_entity, [])
     
-        if records:
-            record = records[0]
-    
-            def extract_fields(obj, prefix=""):
-                fields = []
-                for key, value in obj.items():
-                    if isinstance(value, dict):
-                        fields.extend(extract_fields(value, f"{prefix}{key}."))
-                    else:
-                        fields.append(f"{prefix}{key}")
-                return fields
-    
-            fields = sorted(set(extract_fields(record)))
+        if not records:
             return Response({
-                "entity": qb_entity,
-                "fields": fields,
-                "count": len(records),
+                "fields": [],
+                "warning": f"No records found for {qb_entity}"
             })
     
-        # ---------------------------- No records found ----------------------------
-        # Return empty fields but include warning
+        # Extract fields dynamically
+        def extract_fields(obj, prefix=""):
+            fields = []
+            for key, value in obj.items():
+                if isinstance(value, dict):
+                    fields.extend(extract_fields(value, f"{prefix}{key}."))
+                else:
+                    fields.append(f"{prefix}{key}")
+            return fields
+    
+        fields = sorted(set(extract_fields(records[0])))
+    
         return Response({
             "entity": qb_entity,
-            "fields": [],
-            "count": 0,
-            "warning": f"No records found for {qb_entity}. Select the entity and save a dataset to fetch data.",
+            "fields": fields
         })
     
         def extract_fields(obj, prefix=""):
