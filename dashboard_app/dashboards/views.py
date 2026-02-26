@@ -1340,167 +1340,142 @@ class ChartViewSet(viewsets.ModelViewSet):
         """
         Executes a dataset against its data source.
         Supports QuickBooks (POST /query) and generic REST APIs.
-        Automatically filters unsupported QB fields to avoid 400 errors.
         """
         source = dataset.api_source
+        params = dataset.query_params.copy() if dataset.query_params else {}
         headers = {}
     
-        # ---------------- QUICKBOOKS ----------------
+        # ---------------- QuickBooks ----------------
         if source.provider.lower() == "quickbooks":
+            # Ensure credentials
             if not source.bearer_token or not source.base_url:
                 return Response(
-                    {"error": "QuickBooks access token or base URL missing"},
-                    status=400,
+                    {"error": "QuickBooks access token or base URL missing."},
+                    status=status.HTTP_400_BAD_REQUEST
                 )
     
             # Refresh token if expired
             if getattr(source, "oauth_token_expires_at", None) and source.oauth_token_expires_at <= timezone.now():
-                refresh_quickbooks_token(source)
+                try:
+                    refresh_quickbooks_token(source)
+                except requests.RequestException as e:
+                    return Response(
+                        {"error": f"Failed to refresh QuickBooks token: {str(e)}"},
+                        status=status.HTTP_502_BAD_GATEWAY
+                    )
     
             headers = {
                 "Authorization": f"Bearer {source.bearer_token}",
                 "Accept": "application/json",
-                "Content-Type": "application/text",
+                "Content-Type": "application/text",  # QB expects raw query in body
             }
     
-            entity = dataset.entity
-            fields = dataset.fields or []
+            # Get entity & fields
+            entity = getattr(dataset, "entity", None)
+            fields = getattr(dataset, "fields", None)
     
             if not entity:
-                return Response({"error": "Entity required"}, status=400)
+                return Response(
+                    {"error": "QuickBooks entity must be selected."},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            if not fields or not isinstance(fields, list) or len(fields) == 0:
+                return Response(
+                    {"error": "Select at least one field for QuickBooks entity."},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
     
-            # ---------------- SAFE QB FIELD LIST ----------------
-            # Top-level fields that QB allows in SELECT
-            SAFE_FIELDS = {
-                "Bill": ["Id", "VendorRef", "TxnDate", "DueDate", "Balance", "TotalAmt", "APAccountRef", "SyncToken", "CurrencyRef"],
-                "Invoice": ["Id", "CustomerRef", "TxnDate", "DueDate", "Balance", "TotalAmt", "Line", "SyncToken", "CurrencyRef"],
-                "Customer": ["Id", "DisplayName", "Balance", "CurrencyRef", "SyncToken"],
-                "Payment": ["Id", "CustomerRef", "TotalAmt", "PaymentRefNum", "TxnDate", "CurrencyRef", "SyncToken"],
-                "Vendor": ["Id", "DisplayName", "Balance", "CurrencyRef", "SyncToken"],
-                "Account": ["Id", "Name", "AccountType", "Balance", "SyncToken"],
-                "Item": ["Id", "Name", "Type", "UnitPrice", "QtyOnHand", "SyncToken"],
-            }
+            # Build query
+            query = f"SELECT {', '.join(fields)} FROM {entity}"
+            filters = getattr(dataset, "filters", {}) or {}
+            where_clauses = []
     
-            safe_fields = SAFE_FIELDS.get(entity, [])
-            # Use only safe fields from user selection
-            fields_to_select = [f for f in fields if f in safe_fields]
-            if not fields_to_select:
-                fields_to_select = safe_fields  # fallback to default safe fields
+            # Date range filter
+            if filters.get("date_field") and filters.get("from") and filters.get("to"):
+                where_clauses.append(
+                    f"{filters['date_field']} BETWEEN '{filters['from']}' AND '{filters['to']}'"
+                )
     
-            query = f"SELECT {', '.join(fields_to_select)} FROM {entity} STARTPOSITION 1 MAXRESULTS 100"
+            # Equals filters
+            for k, v in filters.get("equals", {}).items():
+                where_clauses.append(f"{k} = '{v}'")
+    
+            if where_clauses:
+                query += " WHERE " + " AND ".join(where_clauses)
+    
             url = f"{source.base_url}/query"
+    
+            # Debug logs
+            print("[QB QUERY]", query)
+            print("[QB URL]", url)
     
             try:
                 resp = requests.post(url, data=query, headers=headers, timeout=20)
                 resp.raise_for_status()
                 payload = resp.json()
+                print("[QB RESPONSE]", payload)
             except requests.RequestException as e:
                 return Response(
                     {"error": "QuickBooks request failed", "details": str(e), "query": query},
-                    status=502,
+                    status=status.HTTP_502_BAD_GATEWAY
                 )
     
+            # Check QuickBooks logical errors
             if "Fault" in payload:
                 return Response(
-                    {"error": "QuickBooks API error", "details": payload["Fault"]},
-                    status=400,
+                    {"error": "QuickBooks API error", "details": payload["Fault"], "query": query},
+                    status=status.HTTP_400_BAD_REQUEST
                 )
     
-            qr = payload.get("QueryResponse", {})
-            entity_key = next(iter(qr.keys()), None)
-            rows = qr.get(entity_key, []) if entity_key else []
-    
-            # ---------------- PICK FIELDS SAFELY ----------------
-            def pick(row, field):
-                val = row
-                for p in field.split("."):
-                    if not isinstance(val, dict):
-                        return None
-                    val = val.get(p)
-                return val
-    
-            data = [
-                {f: pick(r, f) for f in fields}  # use original requested fields
-                for r in rows
-            ]
-    
-            # ---------------- AGGREGATION ----------------
-            aggregation = getattr(dataset, "aggregation", None)
-            agg_field = getattr(dataset, "aggregation_field", None)
-            group_by = getattr(dataset, "group_by", None)
-    
-            # ----- KPI -----
-            if aggregation and agg_field and not group_by:
-                values = [
-                    float(row.get(agg_field) or 0)
-                    for row in data
-                    if row.get(agg_field) is not None
-                ]
-    
-                result = {
-                    "sum": sum(values),
-                    "count": len(values),
-                    "avg": sum(values) / len(values) if values else 0,
-                    "min": min(values) if values else 0,
-                    "max": max(values) if values else 0,
-                }.get(aggregation)
-    
+            query_response = payload.get("QueryResponse", {})
+            if not query_response:
                 return Response({
-                    "type": "kpi",
-                    "field": agg_field,
-                    "aggregation": aggregation,
-                    "value": result,
+                    "entity": entity,
+                    "fields": fields,
+                    "count": 0,
+                    "data": []
                 })
     
-            # ----- CHART -----
-            if aggregation and agg_field and group_by:
-                grouped = {}
+            # Extract rows (QB returns key by entity name)
+            entity_key = next(iter(query_response.keys()), None)
+            rows = query_response.get(entity_key, []) if entity_key else []
     
-                for row in data:
-                    key = row.get(group_by)
-                    val = float(row.get(agg_field) or 0)
-                    if key is not None:
-                        grouped[key] = grouped.get(key, 0) + val
-    
-                return Response({
-                    "type": "chart",
-                    "aggregation": aggregation,
-                    "field": agg_field,
-                    "group_by": group_by,
-                    "data": [
-                        {"label": k, "value": v}
-                        for k, v in grouped.items()
-                    ],
-                })
-    
-            # ----- TABLE -----
             return Response({
-                "type": "table",
-                "count": len(data),
-                "data": data,
+                "entity": entity,
+                "fields": fields,
+                "count": len(rows),
+                "data": rows,
             })
     
-        # ---------------- GENERIC REST ----------------
+        # ---------------- Generic REST APIs ----------------
         else:
             url = urljoin(
                 source.base_url.rstrip("/") + "/",
                 (dataset.endpoint or "").lstrip("/")
             )
     
+            if source.auth_type == "API_KEY_HEADER" and source.api_key:
+                headers[source.api_key_header] = source.api_key
+            elif source.auth_type == "BEARER" and source.api_key:
+                headers["Authorization"] = f"Bearer {source.api_key}"
+            elif source.auth_type == "API_KEY_QUERY" and source.api_key:
+                params[source.api_key_header] = source.api_key
+    
             try:
-                resp = requests.get(url, headers=headers, timeout=20)
+                resp = requests.get(url, headers=headers, params=params, timeout=20)
                 resp.raise_for_status()
                 data = resp.json()
             except requests.RequestException as e:
-                return Response({"error": str(e)}, status=502)
+                return Response({"error": str(e)}, status=status.HTTP_502_BAD_GATEWAY)
     
+            # Flatten standard API responses
             if isinstance(data, dict):
                 for k in ("results", "data", "rows"):
                     if k in data and isinstance(data[k], list):
                         data = data[k]
                         break
     
-            return Response({"type": "table", "data": data})
+            return Response({"data": data})
 
     # ----------------------------------
     # DATASET + AGGREGATION ENGINE
