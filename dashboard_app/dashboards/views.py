@@ -1337,6 +1337,11 @@ class ChartViewSet(viewsets.ModelViewSet):
         return Response(chart_payload, status=status.HTTP_200_OK)
 
     def _run_dataset(self, dataset):
+        """
+        Executes a dataset against its data source.
+        Supports QuickBooks (POST /query) and generic REST APIs.
+        Handles aggregation, KPI, and grouping for charts.
+        """
         source = dataset.api_source
         headers = {}
     
@@ -1345,7 +1350,7 @@ class ChartViewSet(viewsets.ModelViewSet):
             if not source.bearer_token or not source.base_url:
                 return Response(
                     {"error": "QuickBooks access token or base URL missing"},
-                    status=status.HTTP_400_BAD_REQUEST,
+                    status=400,
                 )
     
             # Refresh token if expired
@@ -1364,8 +1369,24 @@ class ChartViewSet(viewsets.ModelViewSet):
             if not entity:
                 return Response({"error": "Entity required"}, status=400)
     
-            # ---------------- FETCH RAW ROWS (NO AGG) ----------------
-            query = f"SELECT * FROM {entity} STARTPOSITION 1 MAXRESULTS 100"
+            # ---------------- FILTER INVALID QB FIELDS ----------------
+            unsupported_fields = ["Line", "sparse", "domain"]
+            safe_fields = [f for f in fields if f not in unsupported_fields]
+    
+            if not safe_fields:
+                return Response(
+                    {"error": "No valid fields to query after removing unsupported QB fields."},
+                    status=400
+                )
+    
+            # QB SELECT only allows top-level fields
+            qb_select_fields = []
+            for f in safe_fields:
+                top_level = f.split(".")[0]
+                if top_level not in qb_select_fields:
+                    qb_select_fields.append(top_level)
+    
+            query = f"SELECT {', '.join(qb_select_fields)} FROM {entity} STARTPOSITION 1 MAXRESULTS 100"
             url = f"{source.base_url}/query"
     
             try:
@@ -1398,7 +1419,7 @@ class ChartViewSet(viewsets.ModelViewSet):
                 return val
     
             data = [
-                {f: pick(r, f) for f in fields}
+                {f: pick(r, f) for f in safe_fields}
                 for r in rows
             ]
     
@@ -1430,10 +1451,9 @@ class ChartViewSet(viewsets.ModelViewSet):
                     "value": result,
                 })
     
-            # ----- CHART -----
+            # ----- CHART WITH GROUP BY -----
             if aggregation and agg_field and group_by:
                 grouped = {}
-    
                 for row in data:
                     key = row.get(group_by)
                     val = float(row.get(agg_field) or 0)
@@ -1445,10 +1465,7 @@ class ChartViewSet(viewsets.ModelViewSet):
                     "aggregation": aggregation,
                     "field": agg_field,
                     "group_by": group_by,
-                    "data": [
-                        {"label": k, "value": v}
-                        for k, v in grouped.items()
-                    ],
+                    "data": [{"label": k, "value": v} for k, v in grouped.items()],
                 })
     
             # ----- TABLE -----
