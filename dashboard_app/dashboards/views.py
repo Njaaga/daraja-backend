@@ -1340,7 +1340,7 @@ class ChartViewSet(viewsets.ModelViewSet):
         """
         Executes a dataset against its data source.
         Supports QuickBooks (POST /query) and generic REST APIs.
-        Handles aggregation, KPI, and grouping for charts.
+        Automatically filters unsupported QB fields to avoid 400 errors.
         """
         source = dataset.api_source
         headers = {}
@@ -1369,24 +1369,25 @@ class ChartViewSet(viewsets.ModelViewSet):
             if not entity:
                 return Response({"error": "Entity required"}, status=400)
     
-            # ---------------- FILTER INVALID QB FIELDS ----------------
-            unsupported_fields = ["Line", "sparse", "domain"]
-            safe_fields = [f for f in fields if f not in unsupported_fields]
+            # ---------------- SAFE QB FIELD LIST ----------------
+            # Top-level fields that QB allows in SELECT
+            SAFE_FIELDS = {
+                "Bill": ["Id", "VendorRef", "TxnDate", "DueDate", "Balance", "TotalAmt", "APAccountRef", "SyncToken", "CurrencyRef"],
+                "Invoice": ["Id", "CustomerRef", "TxnDate", "DueDate", "Balance", "TotalAmt", "Line", "SyncToken", "CurrencyRef"],
+                "Customer": ["Id", "DisplayName", "Balance", "CurrencyRef", "SyncToken"],
+                "Payment": ["Id", "CustomerRef", "TotalAmt", "PaymentRefNum", "TxnDate", "CurrencyRef", "SyncToken"],
+                "Vendor": ["Id", "DisplayName", "Balance", "CurrencyRef", "SyncToken"],
+                "Account": ["Id", "Name", "AccountType", "Balance", "SyncToken"],
+                "Item": ["Id", "Name", "Type", "UnitPrice", "QtyOnHand", "SyncToken"],
+            }
     
-            if not safe_fields:
-                return Response(
-                    {"error": "No valid fields to query after removing unsupported QB fields."},
-                    status=400
-                )
+            safe_fields = SAFE_FIELDS.get(entity, [])
+            # Use only safe fields from user selection
+            fields_to_select = [f for f in fields if f in safe_fields]
+            if not fields_to_select:
+                fields_to_select = safe_fields  # fallback to default safe fields
     
-            # QB SELECT only allows top-level fields
-            qb_select_fields = []
-            for f in safe_fields:
-                top_level = f.split(".")[0]
-                if top_level not in qb_select_fields:
-                    qb_select_fields.append(top_level)
-    
-            query = f"SELECT {', '.join(qb_select_fields)} FROM {entity} STARTPOSITION 1 MAXRESULTS 100"
+            query = f"SELECT {', '.join(fields_to_select)} FROM {entity} STARTPOSITION 1 MAXRESULTS 100"
             url = f"{source.base_url}/query"
     
             try:
@@ -1419,7 +1420,7 @@ class ChartViewSet(viewsets.ModelViewSet):
                 return val
     
             data = [
-                {f: pick(r, f) for f in safe_fields}
+                {f: pick(r, f) for f in fields}  # use original requested fields
                 for r in rows
             ]
     
@@ -1451,9 +1452,10 @@ class ChartViewSet(viewsets.ModelViewSet):
                     "value": result,
                 })
     
-            # ----- CHART WITH GROUP BY -----
+            # ----- CHART -----
             if aggregation and agg_field and group_by:
                 grouped = {}
+    
                 for row in data:
                     key = row.get(group_by)
                     val = float(row.get(agg_field) or 0)
@@ -1465,7 +1467,10 @@ class ChartViewSet(viewsets.ModelViewSet):
                     "aggregation": aggregation,
                     "field": agg_field,
                     "group_by": group_by,
-                    "data": [{"label": k, "value": v} for k, v in grouped.items()],
+                    "data": [
+                        {"label": k, "value": v}
+                        for k, v in grouped.items()
+                    ],
                 })
     
             # ----- TABLE -----
