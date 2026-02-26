@@ -1340,10 +1340,9 @@ class ChartViewSet(viewsets.ModelViewSet):
         """
         Executes a dataset against its data source.
         Supports QuickBooks (POST /query) and generic REST APIs.
-        Handles aggregation, group-by, and nested fields safely.
+        Returns structured data compatible with ChartRenderer.
         """
         source = dataset.api_source
-        params = dataset.query_params.copy() if dataset.query_params else {}
         headers = {}
     
         # ---------------- QUICKBOOKS ----------------
@@ -1369,9 +1368,12 @@ class ChartViewSet(viewsets.ModelViewSet):
     
             if not entity:
                 return Response({"error": "Entity required"}, status=400)
+            if not fields:
+                # fallback: select all fields
+                fields = ["*"]
     
-            # ---------------- FETCH RAW ROWS (ALL FIELDS) ----------------
-            query = f"SELECT * FROM {entity} STARTPOSITION 1 MAXRESULTS 100"
+            # ---------------- FETCH RAW ROWS ----------------
+            query = f"SELECT {', '.join(fields)} FROM {entity} STARTPOSITION 1 MAXRESULTS 100"
             url = f"{source.base_url}/query"
     
             try:
@@ -1402,17 +1404,66 @@ class ChartViewSet(viewsets.ModelViewSet):
     
             data = [{f: pick(r, f) for f in fields} for r in rows]
     
-        # ---------------- GENERIC REST API ----------------
-        else:
-            url = urljoin(source.base_url.rstrip("/") + "/", (dataset.endpoint or "").lstrip("/"))
+            # ---------------- AGGREGATION ----------------
+            aggregation = getattr(dataset, "aggregation", None)
+            agg_field = getattr(dataset, "aggregation_field", None)
+            group_by = getattr(dataset, "group_by", None)
     
-            # Add auth headers
+            # ----- KPI -----
+            if aggregation and agg_field and not group_by:
+                values = [float(r.get(agg_field) or 0) for r in data if r.get(agg_field) is not None]
+                result = {
+                    "sum": sum(values),
+                    "count": len(values),
+                    "avg": sum(values) / len(values) if values else 0,
+                    "min": min(values) if values else 0,
+                    "max": max(values) if values else 0,
+                }.get(aggregation)
+                return Response({
+                    "type": "kpi",
+                    "field": agg_field,
+                    "aggregation": aggregation,
+                    "value": result,
+                })
+    
+            # ----- CHART WITH GROUP BY -----
+            if aggregation and agg_field and group_by:
+                grouped = {}
+                for row in data:
+                    key = row.get(group_by) or "Unknown"
+                    val = float(row.get(agg_field) or 0)
+                    grouped[key] = grouped.get(key, 0) + val
+                return Response({
+                    "type": "chart",
+                    "aggregation": aggregation,
+                    "field": agg_field,
+                    "group_by": group_by,
+                    "data": [{"label": k, "value": v} for k, v in grouped.items()],
+                })
+    
+            # ----- TABLE -----
+            return Response({
+                "type": "table",
+                "count": len(data),
+                "data": data,
+            })
+    
+        # ---------------- GENERIC REST ----------------
+        else:
+            url = urljoin(
+                source.base_url.rstrip("/") + "/",
+                (dataset.endpoint or "").lstrip("/")
+            )
+    
+            # Auth
             if source.auth_type == "API_KEY_HEADER" and source.api_key:
                 headers[source.api_key_header] = source.api_key
             elif source.auth_type == "BEARER" and source.api_key:
                 headers["Authorization"] = f"Bearer {source.api_key}"
             elif source.auth_type == "API_KEY_QUERY" and source.api_key:
-                params[source.api_key_header] = source.api_key
+                params = {source.api_key_header: source.api_key}
+            else:
+                params = {}
     
             try:
                 resp = requests.get(url, headers=headers, params=params, timeout=20)
@@ -1421,69 +1472,18 @@ class ChartViewSet(viewsets.ModelViewSet):
             except requests.RequestException as e:
                 return Response({"error": str(e)}, status=502)
     
-            # Flatten common envelope
+            # Flatten common API responses
             if isinstance(data, dict):
                 for k in ("results", "data", "rows"):
                     if k in data and isinstance(data[k], list):
                         data = data[k]
                         break
     
-            # Pick only selected fields
-            fields = dataset.fields or []
-            if fields:
-                def pick(row, field):
-                    val = row
-                    for p in field.split("."):
-                        if not isinstance(val, dict):
-                            return None
-                        val = val.get(p)
-                    return val
-                data = [{f: pick(r, f) for f in fields} for r in data]
-    
-        # ---------------- AGGREGATION ----------------
-        aggregation = getattr(dataset, "aggregation", None)
-        agg_field = getattr(dataset, "aggregation_field", None)
-        group_by = getattr(dataset, "group_by", None)
-    
-        # ----- KPI -----
-        if aggregation and agg_field and not group_by:
-            values = [float(r.get(agg_field) or 0) for r in data if r.get(agg_field) is not None]
-            result = {
-                "sum": sum(values),
-                "count": len(values),
-                "avg": sum(values)/len(values) if values else 0,
-                "min": min(values) if values else 0,
-                "max": max(values) if values else 0,
-            }.get(aggregation)
             return Response({
-                "type": "kpi",
-                "field": agg_field,
-                "aggregation": aggregation,
-                "value": result,
+                "type": "table",
+                "count": len(data) if isinstance(data, list) else 0,
+                "data": data,
             })
-    
-        # ----- CHART (with optional grouping) -----
-        if aggregation and agg_field and group_by:
-            grouped = {}
-            for row in data:
-                key = row.get(group_by)
-                val = float(row.get(agg_field) or 0)
-                if key is not None:
-                    grouped[key] = grouped.get(key, 0) + val
-            return Response({
-                "type": "chart",
-                "aggregation": aggregation,
-                "field": agg_field,
-                "group_by": group_by,
-                "data": [{"label": k, "value": v} for k, v in grouped.items()],
-            })
-    
-        # ----- TABLE (default fallback) -----
-        return Response({
-            "type": "table",
-            "count": len(data),
-            "data": data,
-        })
 
     # ----------------------------------
     # DATASET + AGGREGATION ENGINE
