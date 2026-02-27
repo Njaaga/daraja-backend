@@ -83,7 +83,7 @@ def quickbooks_callback(request):
         provider="quickbooks",
         defaults={
             "name": "QuickBooks Online",
-            "base_url": f"https://quickbooks.api.intuit.com/v3/company/{realm_id}",
+            "base_url": f"https://sandbox-quickbooks.api.intuit.com/v3/company/{realm_id}",
             "auth_type": "BEARER",
             "bearer_token": access_token,
             "oauth_refresh_token": refresh_token,
