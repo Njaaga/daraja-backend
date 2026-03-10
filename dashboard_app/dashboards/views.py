@@ -1337,16 +1337,16 @@ class ChartViewSet(viewsets.ModelViewSet):
         return Response(chart_payload, status=status.HTTP_200_OK)
 
     def _run_dataset(self, dataset):
-        """
-        Executes a dataset against its data source.
-        Supports QuickBooks (POST /query) and generic REST APIs.
-        Flattens nested fields automatically for charting.
-        """
-        import copy
+        import requests
+        from collections import defaultdict
         from collections.abc import Mapping
+        from django.utils import timezone
+    
+        MAX_TABLE_ROWS = 1000
+        MAX_CHART_POINTS = 100
+        QB_PAGE_SIZE = 500
     
         def flatten(obj, prefix=""):
-            """Recursively flatten nested dicts"""
             flat = {}
             for k, v in obj.items():
                 key = f"{prefix}.{k}" if prefix else k
@@ -1356,15 +1356,34 @@ class ChartViewSet(viewsets.ModelViewSet):
                     flat[key] = v
             return flat
     
+        def get_value(row, field):
+            if not field:
+                return None
+            val = row
+            for part in field.split("."):
+                if not isinstance(val, dict):
+                    return None
+                val = val.get(part)
+            return val
+    
         source = dataset.api_source
-        headers = {}
+        entity = dataset.entity
+        fields = dataset.fields or []
     
-        # ---------------- QUICKBOOKS ----------------
+        aggregation = getattr(dataset, "aggregation", None)
+        agg_field = getattr(dataset, "aggregation_field", None)
+        group_by = getattr(dataset, "group_by", None)
+    
+        rows = []
+    
+        # ------------------------------------------------
+        # QUICKBOOKS
+        # ------------------------------------------------
         if source.provider.lower() == "quickbooks":
-            if not source.bearer_token or not source.base_url:
-                return Response({"error": "QuickBooks access token or base URL missing"}, status=400)
     
-            # Refresh token if expired
+            if not source.bearer_token or not source.base_url:
+                return Response({"error": "QuickBooks credentials missing"}, status=400)
+    
             if getattr(source, "oauth_token_expires_at", None) and source.oauth_token_expires_at <= timezone.now():
                 refresh_quickbooks_token(source)
     
@@ -1374,106 +1393,151 @@ class ChartViewSet(viewsets.ModelViewSet):
                 "Content-Type": "application/text",
             }
     
-            entity = dataset.entity
-            if not entity:
-                return Response({"error": "Entity required"}, status=400)
+            start = 1
     
-            fields = dataset.fields or []
+            while len(rows) < MAX_TABLE_ROWS:
     
-            # ---------------- FETCH RAW ROWS ----------------
-            query = f"SELECT * FROM {entity} STARTPOSITION 1 MAXRESULTS 100"
-            url = f"{source.base_url}/query"
+                query = f"SELECT * FROM {entity} STARTPOSITION {start} MAXRESULTS {QB_PAGE_SIZE}"
+                url = f"{source.base_url}/query"
     
-            try:
-                resp = requests.post(url, data=query, headers=headers, timeout=20)
-                resp.raise_for_status()
-                payload = resp.json()
-            except requests.RequestException as e:
-                return Response({"error": "QuickBooks request failed", "details": str(e), "query": query}, status=502)
+                try:
+                    resp = requests.post(url, data=query, headers=headers, timeout=30)
+                    resp.raise_for_status()
+                    payload = resp.json()
+                except requests.RequestException as e:
+                    return Response({"error": str(e)}, status=502)
     
-            if "Fault" in payload:
-                return Response({"error": "QuickBooks API error", "details": payload["Fault"]}, status=400)
+                qr = payload.get("QueryResponse", {})
+                entity_key = next(iter(qr.keys()), None)
     
-            qr = payload.get("QueryResponse", {})
-            entity_key = next(iter(qr.keys()), None)
-            rows = qr.get(entity_key, []) if entity_key else []
+                if not entity_key:
+                    break
     
-            # ---------------- FLATTEN ----------------
-            flat_rows = [flatten(r) for r in rows]
+                batch = qr.get(entity_key, [])
+                if not batch:
+                    break
     
-            # ---------------- PICK FIELDS ----------------
-            if fields:
-                flat_rows = [{f: r.get(f) for f in fields} for r in flat_rows]
+                rows.extend(batch)
     
-            # ---------------- AGGREGATION ----------------
-            aggregation = getattr(dataset, "aggregation", None)
-            agg_field = getattr(dataset, "aggregation_field", None)
-            group_by = getattr(dataset, "group_by", None)
+                if len(batch) < QB_PAGE_SIZE:
+                    break
     
-            # ----- KPI -----
-            if aggregation and agg_field and not group_by:
-                values = [float(r.get(agg_field) or 0) for r in flat_rows if r.get(agg_field) is not None]
-                result = {
-                    "sum": sum(values),
-                    "count": len(values),
-                    "avg": sum(values) / len(values) if values else 0,
-                    "min": min(values) if values else 0,
-                    "max": max(values) if values else 0,
-                }.get(aggregation)
+                start += QB_PAGE_SIZE
     
-                return Response({
-                    "type": "kpi",
-                    "field": agg_field,
-                    "aggregation": aggregation,
-                    "value": result,
-                })
+            rows = rows[:MAX_TABLE_ROWS]
     
-            # ----- CHART -----
-            if aggregation and agg_field and group_by:
-                grouped = {}
-                for r in flat_rows:
-                    key = r.get(group_by)
-                    val = float(r.get(agg_field) or 0)
-                    if key is not None:
-                        grouped[key] = grouped.get(key, 0) + val
-    
-                return Response({
-                    "type": "chart",
-                    "aggregation": aggregation,
-                    "field": agg_field,
-                    "group_by": group_by,
-                    "data": [{"label": k, "value": v} for k, v in grouped.items()],
-                })
-    
-            # ----- TABLE -----
-            return Response({"type": "table", "count": len(flat_rows), "data": flat_rows})
-    
-        # ---------------- GENERIC REST ----------------
+        # ------------------------------------------------
+        # GENERIC REST / EXCEL DATA
+        # ------------------------------------------------
         else:
+    
             url = urljoin(source.base_url.rstrip("/") + "/", (dataset.endpoint or "").lstrip("/"))
+    
+            headers = {}
+    
             if source.auth_type == "API_KEY_HEADER" and source.api_key:
                 headers[source.api_key_header] = source.api_key
             elif source.auth_type == "BEARER" and source.api_key:
                 headers["Authorization"] = f"Bearer {source.api_key}"
     
             try:
-                resp = requests.get(url, headers=headers, timeout=20)
+                resp = requests.get(url, headers=headers, timeout=30)
                 resp.raise_for_status()
                 data = resp.json()
             except requests.RequestException as e:
                 return Response({"error": str(e)}, status=502)
     
-            # Flatten if dict response
             if isinstance(data, dict):
                 for k in ("results", "data", "rows"):
-                    if k in data and isinstance(data[k], list):
+                    if isinstance(data.get(k), list):
                         data = data[k]
                         break
     
-            # Flatten nested fields automatically
-            flat_rows = [flatten(r) if isinstance(r, dict) else r for r in data]
+            rows = data[:MAX_TABLE_ROWS]
     
-            return Response({"type": "table", "data": flat_rows})
+        # ------------------------------------------------
+        # FIELD SELECTION (FAST)
+        # ------------------------------------------------
+        if fields:
+            rows = [{f: get_value(r, f) for f in fields} for r in rows]
+        else:
+            rows = [flatten(r) for r in rows]
+    
+        # ------------------------------------------------
+        # KPI AGGREGATION
+        # ------------------------------------------------
+        if aggregation and agg_field and not group_by:
+    
+            values = []
+            for r in rows:
+                v = get_value(r, agg_field)
+                try:
+                    values.append(float(v))
+                except (TypeError, ValueError):
+                    continue
+    
+            if not values:
+                return Response({"type": "kpi", "value": 0})
+    
+            result = {
+                "sum": sum(values),
+                "count": len(values),
+                "avg": sum(values) / len(values),
+                "min": min(values),
+                "max": max(values),
+            }.get(aggregation)
+    
+            return Response({
+                "type": "kpi",
+                "aggregation": aggregation,
+                "field": agg_field,
+                "value": round(result, 2),
+            })
+    
+        # ------------------------------------------------
+        # CHART AGGREGATION
+        # ------------------------------------------------
+        if aggregation and agg_field and group_by:
+    
+            grouped = defaultdict(float)
+    
+            for r in rows:
+    
+                key = get_value(r, group_by)
+    
+                try:
+                    val = float(get_value(r, agg_field))
+                except (TypeError, ValueError):
+                    continue
+    
+                if key is not None:
+                    grouped[key] += val
+    
+            chart_data = [
+                {"label": k, "value": round(v, 2)}
+                for k, v in grouped.items()
+            ]
+    
+            chart_data = sorted(chart_data, key=lambda x: x["value"], reverse=True)
+    
+            chart_data = chart_data[:MAX_CHART_POINTS]
+    
+            return Response({
+                "type": "chart",
+                "group_by": group_by,
+                "aggregation": aggregation,
+                "data": chart_data,
+            })
+    
+        # ------------------------------------------------
+        # TABLE PREVIEW
+        # ------------------------------------------------
+        return Response({
+            "type": "table",
+            "count": len(rows),
+            "data": rows,
+            "limit": MAX_TABLE_ROWS,
+        })
 
     # ----------------------------------
     # DATASET + AGGREGATION ENGINE
