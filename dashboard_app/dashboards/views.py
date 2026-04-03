@@ -1768,6 +1768,41 @@ class DashboardViewSet(viewsets.ModelViewSet):
     
         # Remove empty operators
         return {k: v for k, v in normalized.items() if v}
+
+    @action(detail=True, methods=["post"])
+    def layout(self, request, pk=None):
+        dashboard = self.get_object()
+        layout = request.data
+    
+        if not isinstance(layout, list):
+            return Response({"error": "Invalid layout"}, status=400)
+    
+        layout_map = {str(item["i"]): item for item in layout}
+    
+        dashboard_charts = dashboard.dashboard_charts.all()
+    
+        updates = []
+    
+        for dc in dashboard_charts:
+            chart_id = str(dc.chart_id)
+    
+            if chart_id in layout_map:
+                l = layout_map[chart_id]
+    
+                dc.layout = {
+                    "x": int(l.get("x", 0)),
+                    "y": int(l.get("y", 0)),
+                    "w": int(l.get("w", 6)),
+                    "h": int(l.get("h", 3)),
+                }
+    
+                updates.append(dc)
+    
+        if updates:
+            DashboardChart.objects.bulk_update(updates, ["layout"])
+    
+        return Response({"status": "saved"})
+
     
     # 🔥 QB DASHBOARD EXECUTION
     @action(detail=True, methods=["get"])
