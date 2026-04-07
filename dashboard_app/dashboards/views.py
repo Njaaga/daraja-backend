@@ -1918,7 +1918,7 @@ class DashboardViewSet(viewsets.ModelViewSet):
                 "stackedFields": [],
                 "filters": [],
                 "selectedFields": chart.selected_fields,
-                "layout": chart.layout,
+                "layout": dc.layout,
                 "data": rows,
             })
     
