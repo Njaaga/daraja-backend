@@ -1905,14 +1905,24 @@ class DashboardViewSet(viewsets.ModelViewSet):
         
             charts_payload.append({
                 "id": chart.id,
+                "dashboardChartId": dc.id,  # ✅ ADD THIS
+            
                 "name": chart.name,
                 "type": chart.chart_type,
                 "xField": chart.x_field,
                 "yField": chart.y_field,
+            
                 "stackedFields": [],
                 "filters": [],
                 "selectedFields": chart.selected_fields,
-                "layout": dc.layout,
+            
+                "layout": dc.layout or {   # ✅ add safe default
+                    "x": 0,
+                    "y": 0,
+                    "w": 6,
+                    "h": 3,
+                },
+            
                 "data": rows,
             })
     
