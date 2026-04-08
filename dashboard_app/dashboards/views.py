@@ -1687,49 +1687,73 @@ class DashboardViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["post"])
     def add_chart(self, request, pk=None):
         dashboard = self.get_object()
-        tenant = get_current_tenant()
-    
-        chart_id = request.data.get("chart_id")
-        chart_config = request.data.get("chart_config")  # NEW: for Excel charts
         layout = request.data.get("layout", {})
         order = request.data.get("order", 0)
-    
-        # ----------------------
-        # CASE 1: normal chart
-        # ----------------------
-        if chart_id:
-            chart = get_object_or_404(Chart, pk=chart_id, tenant=tenant)
-            dc, created = DashboardChart.objects.get_or_create(
-                dashboard=dashboard,
-                chart=chart,
-                defaults={"layout": layout, "order": order},
+
+        tenant = get_current_tenant()
+
+        chart_id = request.data.get("chart_id")
+        dataset_id = request.data.get("dataset_id")
+        is_excel = request.data.get("is_excel", False)
+        chart_config = request.data.get("chart_config", {})
+
+        if is_excel:
+            # 1️⃣ Create Chart object for Excel dataset
+            dataset = get_object_or_404(Dataset, pk=dataset_id, tenant=tenant)
+
+            chart = Chart.objects.create(
+                tenant=tenant,
+                name=chart_config.get("name") or "Excel Chart",
+                chart_type=chart_config.get("type"),
+                x_field=chart_config.get("xField"),
+                y_field=chart_config.get("yField"),
+                aggregation=chart_config.get("aggregation"),
+                dataset=dataset,
+                filters=chart_config.get("filters", []),
+                joins=chart_config.get("joins", []),
+                calculated_fields=chart_config.get("calculated_fields", []),
+                logic_rules=chart_config.get("logic_rules", []),
+                logic_expression=chart_config.get("logic_expression"),
             )
-            if not created:
-                dc.layout = layout
-                dc.order = order
-                dc.save()
-    
-            return Response(DashboardChartSerializer(dc).data)
-    
-        # ----------------------
-        # CASE 2: Excel / dynamic chart
-        # ----------------------
-        elif chart_config:
-            # Store Excel charts as dashboard-only (no Chart object)
-            dc = DashboardChart.objects.create(
-                dashboard=dashboard,
-                chart=None,
-                chart_config=chart_config,
-                layout=layout,
-                order=order,
-            )
-            return Response(DashboardChartSerializer(dc).data)
-    
-        # ----------------------
-        # ERROR: nothing provided
-        # ----------------------
         else:
-            return Response({"error": "chart_id or chart_config required"}, status=400)
+            chart = get_object_or_404(Chart, pk=chart_id, tenant=tenant)
+
+        # 2️⃣ Attach to dashboard
+        dc, created = DashboardChart.objects.get_or_create(
+            dashboard=dashboard,
+            chart=chart,
+            defaults={"layout": layout, "order": order},
+        )
+        if not created:
+            dc.layout = layout
+            dc.order = order
+            dc.save()
+
+        return Response(DashboardChartSerializer(dc).data)
+
+
+    @action(detail=False, methods=["post"])
+    def upload_excel_dataset(self, request):
+        tenant = get_current_tenant()
+        file = request.FILES.get("file")
+        name = request.data.get("name") or file.name
+    
+        if not file:
+            return Response({"error": "No file uploaded"}, status=400)
+    
+        # parse Excel into rows (pandas recommended)
+        import pandas as pd
+        df = pd.read_excel(file)
+        data_rows = df.to_dict(orient="records")
+    
+        dataset = Dataset.objects.create(
+            tenant=tenant,
+            name=name,
+            data=data_rows,
+            type="excel",
+        )
+    
+        return Response(DatasetSerializer(dataset).data)
 
     def resolve_field(row, field):
         """
