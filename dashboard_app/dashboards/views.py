@@ -1687,24 +1687,49 @@ class DashboardViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["post"])
     def add_chart(self, request, pk=None):
         dashboard = self.get_object()
+        tenant = get_current_tenant()
+    
         chart_id = request.data.get("chart_id")
+        chart_config = request.data.get("chart_config")  # NEW: for Excel charts
         layout = request.data.get("layout", {})
         order = request.data.get("order", 0)
-
-        tenant = get_current_tenant()
-        chart = get_object_or_404(Chart, pk=chart_id, tenant=tenant)
-
-        dc, created = DashboardChart.objects.get_or_create(
-            dashboard=dashboard,
-            chart=chart,
-            defaults={"layout": layout, "order": order},
-        )
-        if not created:
-            dc.layout = layout
-            dc.order = order
-            dc.save()
-
-        return Response(DashboardChartSerializer(dc).data)
+    
+        # ----------------------
+        # CASE 1: normal chart
+        # ----------------------
+        if chart_id:
+            chart = get_object_or_404(Chart, pk=chart_id, tenant=tenant)
+            dc, created = DashboardChart.objects.get_or_create(
+                dashboard=dashboard,
+                chart=chart,
+                defaults={"layout": layout, "order": order},
+            )
+            if not created:
+                dc.layout = layout
+                dc.order = order
+                dc.save()
+    
+            return Response(DashboardChartSerializer(dc).data)
+    
+        # ----------------------
+        # CASE 2: Excel / dynamic chart
+        # ----------------------
+        elif chart_config:
+            # Store Excel charts as dashboard-only (no Chart object)
+            dc = DashboardChart.objects.create(
+                dashboard=dashboard,
+                chart=None,
+                chart_config=chart_config,
+                layout=layout,
+                order=order,
+            )
+            return Response(DashboardChartSerializer(dc).data)
+    
+        # ----------------------
+        # ERROR: nothing provided
+        # ----------------------
+        else:
+            return Response({"error": "chart_id or chart_config required"}, status=400)
 
     def resolve_field(row, field):
         """
