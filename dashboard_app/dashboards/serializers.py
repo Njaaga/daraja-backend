@@ -411,7 +411,7 @@ class DashboardChartSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = DashboardChart
-        fields = ["id", "dashboard", "chart", "layout", "order", "chart_detail"]
+        fields = ["id", "dashboard", "chart", "chart_config", "layout", "order", "chart_detail"]
 
 
 # ----------------------------------------------------
