@@ -302,6 +302,7 @@ class Dashboard(models.Model):
 class DashboardChart(models.Model):
     dashboard = models.ForeignKey(Dashboard, on_delete=models.CASCADE, related_name="dashboard_charts")
     chart = models.ForeignKey(Chart, on_delete=models.CASCADE)
+    chart_config = models.JSONField(null=True, blank=True)
     # layout meta to persist position/size in the grid (x,y,w,h)
     layout = models.JSONField(default=dict, blank=True)
     order = models.IntegerField(default=0)
