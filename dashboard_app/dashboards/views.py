@@ -1717,16 +1717,24 @@ class DashboardViewSet(viewsets.ModelViewSet):
             chart = get_object_or_404(Chart, pk=chart_id, tenant=tenant)
     
         # ✅ Attach to dashboard with chart_config
-        dc, created = DashboardChart.objects.get_or_create(
-            dashboard=dashboard,
-            chart=chart,
-            defaults={"layout": layout, "order": order, "chart_config": chart_config},
-        )
-        if not created:
+        # Try to fetch existing DashboardChart
+        dc = DashboardChart.objects.filter(dashboard=dashboard, chart=chart).first()
+        
+        if dc:
+            # Update layout/order/config
             dc.layout = layout
             dc.order = order
             dc.chart_config = chart_config
             dc.save()
+        else:
+            # Create a new attachment
+            dc = DashboardChart.objects.create(
+                dashboard=dashboard,
+                chart=chart,
+                layout=layout,
+                order=order,
+                chart_config=chart_config,
+            )
     
         return Response(DashboardChartSerializer(dc).data)
 
