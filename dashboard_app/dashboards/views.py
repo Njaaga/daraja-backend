@@ -1689,46 +1689,45 @@ class DashboardViewSet(viewsets.ModelViewSet):
         dashboard = self.get_object()
         layout = request.data.get("layout", {})
         order = request.data.get("order", 0)
-
         tenant = get_current_tenant()
-
+    
         chart_id = request.data.get("chart_id")
         dataset_id = request.data.get("dataset_id")
         is_excel = request.data.get("is_excel", False)
         chart_config = request.data.get("chart_config", {})
-
+    
         if is_excel:
-            # 1️⃣ Create Chart object for Excel dataset
-            dataset = get_object_or_404(Dataset, pk=dataset_id, tenant=tenant)
-
+            # ✅ Create Chart object for Excel chart
             chart = Chart.objects.create(
                 tenant=tenant,
                 name=chart_config.get("name") or "Excel Chart",
-                chart_type=chart_config.get("type"),
+                chart_type=chart_config.get("type") or "table",
                 x_field=chart_config.get("xField"),
                 y_field=chart_config.get("yField"),
                 aggregation=chart_config.get("aggregation"),
-                dataset=dataset,
+                dataset=None,  # optional: no dataset needed for raw Excel
                 filters=chart_config.get("filters", []),
                 joins=chart_config.get("joins", []),
                 calculated_fields=chart_config.get("calculated_fields", []),
                 logic_rules=chart_config.get("logic_rules", []),
                 logic_expression=chart_config.get("logic_expression"),
+                excel_snapshot=chart_config.get("excelData", []),  # store Excel rows
             )
         else:
             chart = get_object_or_404(Chart, pk=chart_id, tenant=tenant)
-
-        # 2️⃣ Attach to dashboard
+    
+        # ✅ Attach to dashboard with chart_config
         dc, created = DashboardChart.objects.get_or_create(
             dashboard=dashboard,
             chart=chart,
-            defaults={"layout": layout, "order": order},
+            defaults={"layout": layout, "order": order, "chart_config": chart_config},
         )
         if not created:
             dc.layout = layout
             dc.order = order
+            dc.chart_config = chart_config
             dc.save()
-
+    
         return Response(DashboardChartSerializer(dc).data)
 
 
