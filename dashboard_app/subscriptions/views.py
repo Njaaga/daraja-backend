@@ -261,39 +261,46 @@ def stripe_webhook(request):
     elif event_type == "invoice.payment_succeeded":
         invoice = data
         subscription_id = invoice.get("subscription")
-
+    
         if not subscription_id:
             return HttpResponse(status=200)
-
+    
         sub = TenantSubscription.objects.filter(
             stripe_subscription_id=subscription_id
         ).first()
-
+    
         if not sub:
             logger.error(f"Subscription not found for renewal: {subscription_id}")
             return HttpResponse(status=200)
-
-        # --- Dates from invoice ---
-        period_start = invoice.get("period_start")
-        period_end = invoice.get("period_end")
-
-        start_date = (
-            datetime.fromtimestamp(period_start, tz=dt_timezone.utc)
-            if period_start else None
-        )
-        end_date = (
-            datetime.fromtimestamp(period_end, tz=dt_timezone.utc)
-            if period_end else None
-        )
-
+    
         try:
-            sub.start_date = start_date
-            sub.end_date = end_date
+            # 🔥 FETCH REAL SUBSCRIPTION FROM STRIPE
+            stripe_sub = stripe.Subscription.retrieve(subscription_id)
+    
+            start_ts = stripe_sub.get("current_period_start")
+            end_ts = stripe_sub.get("current_period_end")
+    
+            start_date = (
+                datetime.fromtimestamp(start_ts, tz=dt_timezone.utc)
+                if start_ts else None
+            )
+            end_date = (
+                datetime.fromtimestamp(end_ts, tz=dt_timezone.utc)
+                if end_ts else None
+            )
+    
+            # ✅ Only update if values exist (extra safety)
+            if end_date:
+                sub.end_date = end_date
+    
+            if start_date:
+                sub.start_date = start_date
+    
             sub.active = True
             sub.save()
-
+    
             logger.info(f"Renewal processed: {subscription_id}")
-
+    
         except Exception as e:
             logger.exception(f"Error processing renewal: {e}")
             return HttpResponse(status=500)
