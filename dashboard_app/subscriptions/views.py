@@ -186,13 +186,14 @@ def stripe_webhook(request):
     logger.info(f"Stripe event received: {event_type}")
 
     # =========================================================
-    # 1️⃣ SUBSCRIPTION EVENTS (create/update/delete)
+    # 1️⃣ SUBSCRIPTION EVENTS (source of truth for dates)
     # =========================================================
     if event_type in [
         "customer.subscription.created",
         "customer.subscription.updated",
         "customer.subscription.deleted",
     ]:
+
         metadata = data.get("metadata", {})
         tenant_slug = metadata.get("tenant_slug")
         plan_id = metadata.get("plan_id")
@@ -208,9 +209,22 @@ def stripe_webhook(request):
 
         plan = SubscriptionPlan.objects.filter(id=plan_id).first() if plan_id else None
 
-        # --- Dates ---
-        start_ts = data.get("current_period_start") or data.get("start_date")
-        end_ts = data.get("current_period_end")
+        # 🔥 FIX: Get dates from subscription items (flexible billing)
+        items = data.get("items", {}).get("data", [])
+
+        start_ts = None
+        end_ts = None
+
+        if items and len(items) > 0:
+            start_ts = items[0].get("current_period_start")
+            end_ts = items[0].get("current_period_end")
+
+        # fallback (older Stripe structure)
+        if not start_ts:
+            start_ts = data.get("current_period_start") or data.get("start_date")
+
+        if not end_ts:
+            end_ts = data.get("current_period_end")
 
         start_date = (
             datetime.fromtimestamp(start_ts, tz=dt_timezone.utc)
@@ -229,22 +243,29 @@ def stripe_webhook(request):
         if event_type == "customer.subscription.deleted":
             active = False
 
+        # 🔥 SAFE UPDATE (no overwriting with None)
+        update_fields = {
+            "tenant": tenant,
+            "plan": plan,
+            "active": active,
+            "auto_renew": not cancel_at_period_end,
+            "max_api_rows": plan.max_api_rows if plan else 0,
+            "max_dashboards": plan.max_dashboards if plan else 0,
+            "max_datasets": plan.max_datasets if plan else 0,
+            "max_users": plan.max_users if plan else 0,
+            "max_groups": plan.max_groups if plan else 0,
+        }
+
+        if start_date:
+            update_fields["start_date"] = start_date
+
+        if end_date:
+            update_fields["end_date"] = end_date
+
         try:
             sub, created = TenantSubscription.objects.update_or_create(
                 stripe_subscription_id=data.get("id"),
-                defaults={
-                    "tenant": tenant,
-                    "plan": plan,
-                    "start_date": start_date,
-                    "end_date": end_date,
-                    "active": active,
-                    "auto_renew": not cancel_at_period_end,
-                    "max_api_rows": plan.max_api_rows if plan else 0,
-                    "max_dashboards": plan.max_dashboards if plan else 0,
-                    "max_datasets": plan.max_datasets if plan else 0,
-                    "max_users": plan.max_users if plan else 0,
-                    "max_groups": plan.max_groups if plan else 0,
-                }
+                defaults=update_fields
             )
 
             logger.info(
@@ -256,61 +277,29 @@ def stripe_webhook(request):
             return HttpResponse(status=500)
 
     # =========================================================
-    # 2️⃣ RENEWALS (FIXED)
+    # 2️⃣ RENEWALS (payment confirmation only)
     # =========================================================
     elif event_type == "invoice.payment_succeeded":
-        invoice = data
-        subscription_id = invoice.get("subscription")
-    
+        subscription_id = data.get("subscription")
+
         if not subscription_id:
             return HttpResponse(status=200)
-    
+
         sub = TenantSubscription.objects.filter(
             stripe_subscription_id=subscription_id
         ).first()
-    
-        if not sub:
-            logger.error(f"Subscription not found for renewal: {subscription_id}")
-            return HttpResponse(status=200)
-    
-        try:
-            # 🔥 FETCH REAL SUBSCRIPTION FROM STRIPE
-            stripe_sub = stripe.Subscription.retrieve(subscription_id)
-    
-            start_ts = stripe_sub.get("current_period_start")
-            end_ts = stripe_sub.get("current_period_end")
-    
-            start_date = (
-                datetime.fromtimestamp(start_ts, tz=dt_timezone.utc)
-                if start_ts else None
-            )
-            end_date = (
-                datetime.fromtimestamp(end_ts, tz=dt_timezone.utc)
-                if end_ts else None
-            )
-    
-            # ✅ Only update if values exist (extra safety)
-            if end_date:
-                sub.end_date = end_date
-    
-            if start_date:
-                sub.start_date = start_date
-    
+
+        if sub:
             sub.active = True
             sub.save()
-    
-            logger.info(f"Renewal processed: {subscription_id}")
-    
-        except Exception as e:
-            logger.exception(f"Error processing renewal: {e}")
-            return HttpResponse(status=500)
+
+        logger.info(f"Payment succeeded: {subscription_id}")
 
     # =========================================================
     # 3️⃣ FAILED PAYMENTS
     # =========================================================
     elif event_type == "invoice.payment_failed":
-        invoice = data
-        subscription_id = invoice.get("subscription")
+        subscription_id = data.get("subscription")
 
         sub = TenantSubscription.objects.filter(
             stripe_subscription_id=subscription_id
