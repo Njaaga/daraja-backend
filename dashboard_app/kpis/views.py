@@ -1,4 +1,3 @@
-from tenants.middleware import get_current_tenant
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.viewsets import ModelViewSet
@@ -6,41 +5,71 @@ from rest_framework.viewsets import ModelViewSet
 from .models import KPI
 from .serializers import KPISerializer
 
+from tenants.middleware import get_current_tenant
+
 
 class KPIViewSet(ModelViewSet):
-    queryset = KPI.objects.all()
     serializer_class = KPISerializer
+
+    def get_queryset(self):
+        tenant = get_current_tenant()
+
+        if not tenant:
+            return KPI.objects.none()
+
+        return KPI.objects.filter(
+            tenant_id=tenant.id
+        )
 
     @action(detail=False, methods=["get"])
     def executive(self, request):
-    
-        tenant = get_current_tenant()
-    
-        return Response({
-            "tenant": str(tenant) if tenant else None,
-            "tenant_id": getattr(tenant, "id", None),
-            "total_kpis": KPI.objects.count(),
-            "all_kpis": list(
-                KPI.objects.values(
-                    "id",
-                    "name",
-                    "tenant_id",
-                    "active"
-                )
-            )
-        })
 
-        data = []
+        tenant = get_current_tenant()
+
+        if not tenant:
+            return Response([])
+
+        kpis = KPI.objects.filter(
+            tenant_id=tenant.id,
+            active=True
+        )
+
+        dashboard = []
 
         for kpi in kpis:
-            data.append({
+
+            metric = kpi.metric
+
+            current_value = self.calculate_metric(metric)
+
+            if current_value >= float(kpi.warning_threshold):
+                status = "healthy"
+            elif current_value >= float(kpi.critical_threshold):
+                status = "warning"
+            else:
+                status = "critical"
+
+            dashboard.append({
                 "id": kpi.id,
                 "name": kpi.name,
-                "current": 0,
+                "current": current_value,
                 "target": float(kpi.target_value),
                 "warning": float(kpi.warning_threshold),
                 "critical": float(kpi.critical_threshold),
-                "status": "healthy",
+                "status": status,
             })
 
-        return Response(data)
+        return Response(dashboard)
+
+    def calculate_metric(self, metric):
+
+        # temporary
+
+        values = {
+            "Revenue": 142500,
+            "Profit": 42000,
+            "Customer Count": 135,
+            "Cash Flow": 62000,
+        }
+
+        return values.get(metric.name, 0)
