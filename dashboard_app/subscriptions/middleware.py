@@ -78,10 +78,6 @@ class SubscriptionEnforcementMiddleware(MiddlewareMixin):
         "/api/oauth/quickbooks/callback",
         "/api/oauth/quickbooks/connect/",
         "/api/oauth/quickbooks/connect",
-        "/api/kpis/",
-        "/api/kpis",
-        "/api/kpis/executive/",
-        "/api/kpis/executive",
     ]
 
     def process_request(self, request):
