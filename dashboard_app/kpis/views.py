@@ -17,12 +17,17 @@ class KPIViewSet(ModelViewSet):
         tenant = get_current_tenant()
     
         return Response({
-            "tenant_id": tenant.id if tenant else None,
-            "tenant_name": str(tenant) if tenant else None,
+            "tenant": str(tenant) if tenant else None,
+            "tenant_id": getattr(tenant, "id", None),
             "total_kpis": KPI.objects.count(),
-            "tenant_kpis": KPI.objects.filter(
-                tenant_id=tenant.id if tenant else None
-            ).count(),
+            "all_kpis": list(
+                KPI.objects.values(
+                    "id",
+                    "name",
+                    "tenant_id",
+                    "active"
+                )
+            )
         })
 
         data = []
