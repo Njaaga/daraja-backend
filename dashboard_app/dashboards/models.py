@@ -220,6 +220,12 @@ class Chart(models.Model):
     dataset = models.ForeignKey(
         "Dataset", on_delete=models.SET_NULL, null=True, blank=True
     )
+    metric = models.ForeignKey(
+        "metrics.Metric",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True
+    )
     chart_type = models.CharField(max_length=50, choices=CHART_TYPES)
     x_field = models.CharField(max_length=255, null=True, blank=True)
     y_field = models.CharField(max_length=255, null=True, blank=True)
