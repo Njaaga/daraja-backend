@@ -13,13 +13,17 @@ class KPIViewSet(ModelViewSet):
 
     @action(detail=False, methods=["get"])
     def executive(self, request):
-
+    
         tenant = get_current_tenant()
-
-        kpis = KPI.objects.filter(
-            tenant_id=tenant.id,
-            active=True
-        )
+    
+        return Response({
+            "tenant_id": tenant.id if tenant else None,
+            "tenant_name": str(tenant) if tenant else None,
+            "total_kpis": KPI.objects.count(),
+            "tenant_kpis": KPI.objects.filter(
+                tenant_id=tenant.id if tenant else None
+            ).count(),
+        })
 
         data = []
 
