@@ -46,6 +46,7 @@ INSTALLED_APPS = [
     "dashboards",
     "tenants",
     "subscriptions",
+    "semantic",
 ]
 
 # --------------------------------------------------
