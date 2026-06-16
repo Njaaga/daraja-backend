@@ -2,6 +2,6 @@ from rest_framework.routers import DefaultRouter
 from .views import KPIViewSet
 
 router = DefaultRouter()
-router.register("", KPIViewSet)
+router.register(r"kpis", KPIViewSet, basename="kpi")
 
 urlpatterns = router.urls
