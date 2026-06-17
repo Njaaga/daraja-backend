@@ -40,7 +40,7 @@ class KPIViewSet(ModelViewSet):
 
             metric = kpi.metric
 
-            current_value = self.calculate_metric(metric)
+            current_value = MetricEngine.calculate(metric, request)
 
             if current_value >= float(kpi.warning_threshold):
                 status = "healthy"
