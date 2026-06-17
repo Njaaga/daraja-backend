@@ -7,6 +7,8 @@ from .serializers import KPISerializer
 
 from tenants.middleware import get_current_tenant
 
+from metrics.services.metric_engine import MetricEngine
+
 
 class KPIViewSet(ModelViewSet):
     serializer_class = KPISerializer
@@ -61,15 +63,4 @@ class KPIViewSet(ModelViewSet):
 
         return Response(dashboard)
 
-    def calculate_metric(self, metric):
 
-        # temporary
-
-        values = {
-            "Revenue": 142500,
-            "Profit": 42000,
-            "Customer Count": 135,
-            "Cash Flow": 62000,
-        }
-
-        return values.get(metric.name, 0)
