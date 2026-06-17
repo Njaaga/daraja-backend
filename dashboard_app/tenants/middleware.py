@@ -38,6 +38,8 @@ class TenantMiddleware:
         "/api/oauth/quickbooks/connect",
         "/api/kpis/executive/",
         "/api/kpis/executive",
+        "/api/kpis/",
+        "/api/kpis",
     )
 
     def __init__(self, get_response):
