@@ -1,6 +1,6 @@
 from django.db import models
 from semantic.models import BusinessModel
-
+from tenants.models import Tenant
 
 class Metric(models.Model):
 
@@ -40,3 +40,35 @@ class Metric(models.Model):
 
     def __str__(self):
         return self.name
+
+class MetricSnapshot(models.Model):
+
+    tenant = models.ForeignKey(
+        Tenant,
+        on_delete=models.CASCADE,
+        related_name="metric_snapshots"
+    )
+
+    metric = models.ForeignKey(
+        "metrics.Metric",
+        on_delete=models.CASCADE,
+        related_name="snapshots"
+    )
+
+    value = models.FloatField(
+        default=0
+    )
+
+    recorded_at = models.DateTimeField(
+        auto_now_add=True
+    )
+
+    class Meta:
+        ordering = ["-recorded_at"]
+
+    def __str__(self):
+        return (
+            f"{self.metric.name} - "
+            f"{self.value} - "
+            f"{self.recorded_at}"
+        )
