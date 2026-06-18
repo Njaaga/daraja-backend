@@ -5,7 +5,7 @@ from .views import MetricViewSet
 router = DefaultRouter()
 
 router.register(
-    r"metrics",
+    r"",
     MetricViewSet,
     basename="metric"
 )
