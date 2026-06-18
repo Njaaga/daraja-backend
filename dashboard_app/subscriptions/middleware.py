@@ -82,6 +82,8 @@ class SubscriptionEnforcementMiddleware(MiddlewareMixin):
         "/api/kpis/executive",
         "/api/kpis/",
         "/api/kpis",
+        "/api/metrics/",
+        "/api/metrics",
     ]
 
     def process_request(self, request):
