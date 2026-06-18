@@ -1,5 +1,10 @@
 # dashboards/services/dataset_runner.py
 
+if request is None:
+    print(
+        "[DATASET RUNNER] "
+        "Running without request context"
+    )
 def run_dataset(dataset, request):
     """
     Must reuse existing dataset execution logic.
