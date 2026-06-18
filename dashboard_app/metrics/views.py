@@ -3,17 +3,16 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 
 from .models import Metric
+from .serializers import MetricSerializer
 from .services.trend_service import TrendService
 
 
 class MetricViewSet(viewsets.ReadOnlyModelViewSet):
 
     queryset = Metric.objects.all()
+    serializer_class = MetricSerializer
 
-    @action(
-        detail=True,
-        methods=["get"]
-    )
+    @action(detail=True, methods=["get"])
     def trend(self, request, pk=None):
 
         metric = self.get_object()
