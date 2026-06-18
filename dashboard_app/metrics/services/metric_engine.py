@@ -36,7 +36,7 @@ class MetricEngine:
 
             rows = run_dataset(
                 dataset,
-                request
+                request=request
             )
 
             print(
