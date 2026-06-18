@@ -40,6 +40,8 @@ class TenantMiddleware:
         "/api/kpis/executive",
         "/api/kpis/",
         "/api/kpis",
+        "/api/metrics/",
+        "/api/metrics",
     )
 
     def __init__(self, get_response):
