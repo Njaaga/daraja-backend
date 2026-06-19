@@ -7,7 +7,7 @@ from .serializers import KPISerializer
 
 from tenants.middleware import get_current_tenant
 
-from metrics.services.metric_engine import MetricEngine
+from metrics.engine.metric_engine import MetricEngine
 
 
 class KPIViewSet(ModelViewSet):
