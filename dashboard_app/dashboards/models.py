@@ -197,11 +197,16 @@ JOIN_TYPE_CHOICES = [
 # ------------------------------
 class Chart(models.Model):
     CHART_TYPES = [
+        ("kpi", "KPI"),
+        ("trend", "Trend"),
+        ("table", "Table"),
+        ("gauge", "Gauge"),
+        ("insight", "Insight"),
+        ("forecast", "Forecast"),
+        ("alert", "Alert"),
         ("bar", "Bar"),
         ("line", "Line"),
         ("pie", "Pie"),
-        ("kpi", "KPI"),
-        ("table", "Table"),
         ("stacked_bar", "Stacked Bar"),
         ("area", "Area"),
         ("scatter", "Scatter"),
