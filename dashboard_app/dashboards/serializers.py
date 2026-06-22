@@ -288,7 +288,7 @@ class ChartSerializer(serializers.ModelSerializer):
     )
     
     metric = serializers.PrimaryKeyRelatedField(
-        queryset=Metric.objects.all(),
+        queryset=Chart.objects.all(),
         required=False,
         allow_null=True,
     )
