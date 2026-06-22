@@ -286,6 +286,12 @@ class ChartSerializer(serializers.ModelSerializer):
         required=False,
         allow_null=True,
     )
+    
+    metric = serializers.PrimaryKeyRelatedField(
+        queryset=Metric.objects.all(),
+        required=False,
+        allow_null=True,
+    )
 
     class Meta:
         model = Chart
@@ -293,6 +299,7 @@ class ChartSerializer(serializers.ModelSerializer):
             "id",
             "name",
             "dataset",
+            "metric",
             "dataset_name",
             "chart_type",
             "x_field",
@@ -351,11 +358,28 @@ class ChartSerializer(serializers.ModelSerializer):
             )
     
         # Field requirements
-        if chart_type != "table":
-            if not attrs.get("x_field") or not attrs.get("y_field"):
+        metric_chart_types = [
+            "kpi",
+            "trend",
+            "gauge",
+            "forecast",
+            "alert",
+            "insight",
+        ]
+        
+        if chart_type in metric_chart_types:
+        
+            if not attrs.get("metric"):
                 raise serializers.ValidationError(
-                    "x_field and y_field are required for this chart type."
+                    "A metric is required for KPI/Trend/Gauge/Forecast/Alert/Insight charts."
                 )
+        
+        else:
+            if chart_type != "table":
+                if not attrs.get("x_field") or not attrs.get("y_field"):
+                    raise serializers.ValidationError(
+                        "x_field and y_field are required for this chart type."
+                    )
     
         return attrs
 
