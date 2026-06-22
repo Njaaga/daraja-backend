@@ -367,19 +367,11 @@ class ChartSerializer(serializers.ModelSerializer):
             "insight",
         ]
         
-        if chart_type in metric_chart_types:
-        
-            if not attrs.get("metric"):
+        if chart_type not in ["table", *metric_chart_types]:
+            if not attrs.get("x_field") or not attrs.get("y_field"):
                 raise serializers.ValidationError(
-                    "A metric is required for KPI/Trend/Gauge/Forecast/Alert/Insight charts."
+                    "x_field and y_field are required for this chart type."
                 )
-        
-        else:
-            if chart_type != "table":
-                if not attrs.get("x_field") or not attrs.get("y_field"):
-                    raise serializers.ValidationError(
-                        "x_field and y_field are required for this chart type."
-                    )
     
         return attrs
 
