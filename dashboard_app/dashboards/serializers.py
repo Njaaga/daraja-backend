@@ -1,6 +1,7 @@
 from django.contrib.auth.models import User
 from rest_framework import serializers
 from .models import ApiDataSource, Dataset, Chart, Dashboard, DashboardChart, Group, ChartJoin
+from metrics.models import Metric
 from django.contrib.auth import get_user_model
 from tenants.models import Tenant  # your tenant model
 import uuid
@@ -288,7 +289,7 @@ class ChartSerializer(serializers.ModelSerializer):
     )
     
     metric = serializers.PrimaryKeyRelatedField(
-        queryset=Chart.objects.all(),
+        queryset=Metric.objects.all(),
         required=False,
         allow_null=True,
     )
